@@ -14,6 +14,12 @@ Scope: `services/computer-use-mcp/**`
 
 Updated for the current terminal-lane-v2 workstream.
 
+This section is intentionally volatile.
+
+- Treat it as a short-lived release snapshot, not a stable contract.
+- If a statement here stops describing the current workstream, either rewrite it or move it into a narrower status note.
+- Durable boundaries, supported capability shape, entrypoints, and validation expectations should live in the later sections of this file.
+
 The important truth is:
 
 - `exec` is already a real mainline surface.
@@ -330,7 +336,27 @@ The current intended behavior is:
 
 This is much closer to the product model, but it is still worth reviewing whenever approval UX changes again.
 
+## Open Decisions
+
+These points are intentionally not locked down yet. Treat them as active design
+space, not accidental ambiguity.
+
+### Desktop control semantics still under review
+
+- Exact `act` lease lifecycle and reacquire behavior for longer multi-step desktop tasks.
+- Which AX failures are allowed to fall back to constrained coordinate behavior, and which must stay explicit unsupported.
+- How strict preview/apply consistency must be for layout operations once more window actions are added.
+- Which behavior differences between `dry-run` and `macos-local` are intentional contract differences versus temporary gaps.
+
+### macOS control quality follow-up is still open
+
+- Mixed-scale multi-display coordinate normalization is not fully settled yet.
+- Permission probing for Accessibility / Screen Recording / Automation should become more explicit before the lane is described as robust.
+- Browser-specific semantics, if they become necessary, should still land as a separate lane instead of leaking into the macOS substrate.
+
 ## Where To Look First
+
+### Terminal lane
 
 If you are continuing terminal lane work, read these first:
 
@@ -344,6 +370,23 @@ If you are continuing terminal lane work, read these first:
 8. `apps/stage-tamagotchi/src/renderer/modules/computer-use-approval.ts`
 
 That set is enough to reconstruct the current terminal-lane-v2 state without rereading the entire repo.
+
+### Desktop control
+
+If you are continuing desktop control work, read these first:
+
+1. `src/executors/macos-local.ts`
+2. `src/server/action-executor.ts`
+3. `src/server/register-tools.ts`
+4. `src/policy.ts`
+5. `src/desktop/control-arbiter.ts`
+6. `src/display/runtime.ts`
+7. `src/runtime-probes.ts`
+8. `src/preflight.ts`
+9. `src/server/register-tools-desktop-control.test.ts`
+10. `src/bin/smoke-macos.ts`
+
+That set is enough to reconstruct the current macOS desktop-control lane without starting from terminal-only entrypoints.
 
 ## Validation Commands
 
@@ -372,7 +415,7 @@ If `pnpm -F @proj-airi/stage-tamagotchi typecheck` behaves oddly in the current 
 
 ## Handoff Rules
 
-If you change terminal lane behavior, update this file before stopping.
+If you change terminal lane or desktop-control behavior materially, update this file before stopping.
 
 At minimum, always rewrite these four facts:
 
@@ -383,8 +426,21 @@ At minimum, always rewrite these four facts:
 
 If those four facts are stale, the next agent will lose time re-deriving context from code.
 
-## Boundary Reminder
+## Scope Reminder
 
-- Keep provider-specific behavior in AIRI / `packages/stage-ui/**`.
-- Keep OS-executor and workflow orchestration logic here.
-- Do not expand this workstream into browser, native click/type/press, or VS Code productization until terminal lane is actually closed.
+### Allowed now
+
+- Terminal lane closure on the existing exec and PTY model.
+- Coding-surface hardening while reusing the existing terminal lane.
+- macOS desktop substrate work inside `computer-use-mcp`, including pointer/control primitives and OS-integration quality work.
+
+### Allowed later
+
+- Browser semantic adapter work as a separate lane once desktop substrate scope is stable enough to support it.
+- OS input fallback behind an explicit opt-in path, never as the default first-choice surface.
+
+### Out of scope for the current lane
+
+- Provider-specific behavior in AIRI / `packages/stage-ui/**`.
+- A second command executor, parallel terminal stack, or hidden bypass around workflow and audit.
+- Treating browser, native click/type/press, or VS Code productization as part of the current terminal-lane closure by default.
