@@ -215,6 +215,40 @@ export async function probePermissionInfo(config: ComputerUseConfig): Promise<Pe
   }
 }
 
+function hasMixedScaleDisplayInfo(displayInfo?: DisplayInfo) {
+  const scales = (displayInfo?.displays ?? [])
+    .map(display => display.scaleFactor)
+    .filter(scale => Number.isFinite(scale) && scale > 0)
+
+  if (scales.length < 2) {
+    return false
+  }
+
+  const first = scales[0]
+  return scales.some(scale => Math.abs(scale - first) >= 0.001)
+}
+
+function hasLikelyMixedScaleRetinaMismatch(params: {
+  displayInfo?: DisplayInfo
+  allowedBounds: { width: number, height: number }
+  lastScreenshot: LastScreenshotInfo
+}) {
+  const { displayInfo, allowedBounds, lastScreenshot } = params
+  if (!displayInfo?.available || !displayInfo.isRetina) {
+    return false
+  }
+
+  if (!hasMixedScaleDisplayInfo(displayInfo)) {
+    return false
+  }
+
+  if (displayInfo.logicalWidth !== allowedBounds.width || displayInfo.logicalHeight !== allowedBounds.height) {
+    return false
+  }
+
+  return lastScreenshot.width > allowedBounds.width || lastScreenshot.height > allowedBounds.height
+}
+
 export function buildCoordinateSpaceInfo(params: {
   config: ComputerUseConfig
   lastScreenshot?: LastScreenshotInfo
@@ -256,12 +290,20 @@ export function buildCoordinateSpaceInfo(params: {
     && params.displayInfo.logicalWidth === allowedBounds.width
     && params.displayInfo.logicalHeight === allowedBounds.height
 
+  const mixedScalePhysicalPixelMismatch = hasLikelyMixedScaleRetinaMismatch({
+    displayInfo: params.displayInfo,
+    allowedBounds,
+    lastScreenshot: params.lastScreenshot,
+  })
+
   return {
     readyForMutations: false,
     aligned: false,
-    reason: physicalPixelMismatch
-      ? 'screenshot dimensions match physical pixels while allowed bounds match logical points; align Retina/backing scale before real input'
-      : `screenshot ${params.lastScreenshot.width}x${params.lastScreenshot.height} does not match allowed bounds ${allowedBounds.width}x${allowedBounds.height}`,
+    reason: mixedScalePhysicalPixelMismatch
+      ? 'screenshot dimensions match mixed-scale physical pixels while allowed bounds match logical points; mixed-scale multi-display normalization is required before real input'
+      : physicalPixelMismatch
+        ? 'screenshot dimensions match physical pixels while allowed bounds match logical points; align Retina/backing scale before real input'
+        : `screenshot ${params.lastScreenshot.width}x${params.lastScreenshot.height} does not match allowed bounds ${allowedBounds.width}x${allowedBounds.height}`,
     allowedBounds,
     lastScreenshot: params.lastScreenshot,
   }

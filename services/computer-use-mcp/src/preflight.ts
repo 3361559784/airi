@@ -14,8 +14,12 @@ function getScreenshotBindingIssue(params: {
   lastScreenshot?: LastScreenshotInfo
   executionTarget: ExecutionTarget
 }) {
+  const targetLabel = params.executionTarget.mode === 'remote' ? 'remote desktop' : 'local desktop'
+  const hostLabel = params.executionTarget.mode === 'remote' ? 'remote host' : 'local host'
+  const displayLabel = params.executionTarget.mode === 'remote' ? 'remote display' : 'local display'
+
   if (!params.lastScreenshot) {
-    return 'capture a fresh screenshot before mutating the remote desktop'
+    return `capture a fresh screenshot before mutating the ${targetLabel}`
   }
 
   if (params.executionTarget.mode !== params.lastScreenshot.executionTargetMode) {
@@ -23,15 +27,15 @@ function getScreenshotBindingIssue(params: {
   }
 
   if (params.executionTarget.hostName !== params.lastScreenshot.sourceHostName) {
-    return 'the latest screenshot was captured on a different remote host'
+    return `the latest screenshot was captured on a different ${hostLabel}`
   }
 
   if (params.executionTarget.displayId !== params.lastScreenshot.sourceDisplayId) {
-    return 'the latest screenshot was captured from a different remote display'
+    return `the latest screenshot was captured from a different ${displayLabel}`
   }
 
   if (params.config.sessionTag && params.config.sessionTag !== params.lastScreenshot.sourceSessionTag) {
-    return 'the latest screenshot was captured from a different remote session tag'
+    return `the latest screenshot was captured from a different ${params.executionTarget.mode === 'remote' ? 'remote' : 'local'} session tag`
   }
 
   return undefined
@@ -80,10 +84,30 @@ export function getRuntimePreflight(params: {
     }
   }
 
+  if (params.config.executor === 'macos-local') {
+    if (params.config.requireAllowedBoundsForMutatingActions && !params.config.allowedBounds) {
+      blockingIssues.push('COMPUTER_USE_ALLOWED_BOUNDS must be configured before strict macOS mutation execution is allowed')
+    }
+    else if (params.config.allowedBounds && params.displayInfo.available) {
+      const logicalWidth = params.displayInfo.logicalWidth ?? params.displayInfo.combinedBounds?.width
+      const logicalHeight = params.displayInfo.logicalHeight ?? params.displayInfo.combinedBounds?.height
+      if (
+        params.config.requireAllowedBoundsForMutatingActions
+        && (logicalWidth !== params.config.allowedBounds.width || logicalHeight !== params.config.allowedBounds.height)
+      ) {
+        blockingIssues.push(`local display ${logicalWidth || '?'}x${logicalHeight || '?'} does not match allowed bounds ${params.config.allowedBounds.width}x${params.config.allowedBounds.height}`)
+      }
+    }
+  }
+
   const mutationReadinessIssues = [...blockingIssues]
-  if (params.config.executor === 'linux-x11') {
+  if (params.config.executor !== 'dry-run') {
     if (params.executionTarget.tainted) {
-      mutationReadinessIssues.push('remote runner session is tainted; capture a fresh screenshot before resuming mutations')
+      mutationReadinessIssues.push(
+        params.config.executor === 'linux-x11'
+          ? 'remote runner session is tainted; capture a fresh screenshot before resuming mutations'
+          : 'local runner session is tainted; capture a fresh screenshot before resuming mutations',
+      )
     }
 
     const screenshotBindingIssue = getScreenshotBindingIssue({

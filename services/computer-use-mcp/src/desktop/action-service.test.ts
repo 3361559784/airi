@@ -40,6 +40,29 @@ function success(actionKind: string): CallToolResult {
 }
 
 describe('desktopActionService', () => {
+  it('retries focus_window once on transient semantic failure', async () => {
+    let callCount = 0
+    const executeAction = vi.fn(async (action) => {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'semantic_focus_failed' }],
+        } satisfies CallToolResult
+      }
+
+      return success(action.kind)
+    }) as unknown as ExecuteAction
+
+    const service = new DesktopActionService(executeAction)
+    const scene = createScene()
+
+    const result = await service.focusWindow(scene, 'w-editor')
+
+    expect(result.status).toBe('completed')
+    expect(executeAction).toHaveBeenCalledTimes(2)
+  })
+
   it('focuses window via focus_window action with skipApprovalQueue', async () => {
     const executeAction = vi.fn(async action => success(action.kind)) as unknown as ExecuteAction
     const service = new DesktopActionService(executeAction)
@@ -78,6 +101,33 @@ describe('desktopActionService', () => {
     })
 
     expect(result.status).toBe('unsupported')
+    expect(executeAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries set_window_bounds once on transient semantic failure', async () => {
+    let callCount = 0
+    const executeAction = vi.fn(async (action) => {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'set_window_bounds failed' }],
+        } satisfies CallToolResult
+      }
+
+      return success(action.kind)
+    }) as unknown as ExecuteAction
+
+    const service = new DesktopActionService(executeAction)
+    const result = await service.moveResizeWindow(createScene(), 'w-editor', {
+      x: 20,
+      y: 20,
+      width: 600,
+      height: 700,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(executeAction).toHaveBeenCalledTimes(2)
   })
 
   it('passes observedBounds separately from target bounds when resizing', async () => {

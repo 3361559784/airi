@@ -29,7 +29,11 @@ import { join } from 'node:path'
 import { env, platform } from 'node:process'
 
 import { appNamesMatch, getKnownAppLaunchNames } from '../app-aliases'
-import { getMacOSDisplayInfo, resolveRetinaScreenshotNormalization } from '../display/runtime'
+import {
+  describeRetinaScreenshotAlignmentIssue,
+  getMacOSDisplayInfo,
+  resolveRetinaScreenshotNormalization,
+} from '../display/runtime'
 import { probePermissionInfo } from '../runtime-probes'
 import { runProcess } from '../utils/process'
 import { captureScreenshotArtifact, readPngDimensions } from '../utils/screenshot'
@@ -494,16 +498,27 @@ async function normalizeRetinaScreenshotFile(config: ComputerUseConfig, outputPa
   const displayInfo = await getMacOSDisplayInfo(config)
   const buffer = await readFile(outputPath)
   const dimensions = readPngDimensions(buffer)
+  const alignmentIssue = describeRetinaScreenshotAlignmentIssue(displayInfo, dimensions)
   const plan = resolveRetinaScreenshotNormalization(displayInfo, dimensions)
   if (!plan) {
-    return undefined
+    return alignmentIssue
+      ? { note: alignmentIssue }
+      : undefined
   }
 
-  await runMacOsJsonScript<{ resized: boolean, reason?: string }>(config, resizeScreenshotScript(), {
+  const resizeResult = await runMacOsJsonScript<{ resized: boolean, reason?: string }>(config, resizeScreenshotScript(), {
     path: outputPath,
     width: plan.width,
     height: plan.height,
   })
+
+  if (!resizeResult.resized) {
+    return {
+      note: resizeResult.reason
+        ? `retina normalization skipped: ${resizeResult.reason}`
+        : 'retina normalization skipped: unknown resize failure',
+    }
+  }
 
   return {
     note: plan.note,

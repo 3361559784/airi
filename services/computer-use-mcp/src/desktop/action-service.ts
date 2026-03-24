@@ -24,6 +24,9 @@ export type MoveResizeWindowResult
     notice: string
   }
 
+const SEMANTIC_ACTION_RETRY_DELAY_MS = 120
+const SEMANTIC_ACTION_MAX_ATTEMPTS = 2
+
 function actionFailed(result: CallToolResult) {
   return result.isError === true
 }
@@ -42,8 +45,56 @@ function errorText(result: CallToolResult) {
   return `${text} ${structuredReason}`.toLowerCase()
 }
 
+function isUnsupportedSemanticError(text: string) {
+  return text.includes('unsupported') || text.includes('not implement')
+}
+
+async function sleep(ms: number) {
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, ms)))
+}
+
 export class DesktopActionService {
   constructor(private readonly executeAction: ExecuteAction) {}
+
+  private async executeSemanticActionWithRetry(action: Parameters<ExecuteAction>[0], toolName: string) {
+    let attempt = 0
+    let lastResult: CallToolResult | undefined
+    let lastError = ''
+
+    while (attempt < SEMANTIC_ACTION_MAX_ATTEMPTS) {
+      attempt += 1
+
+      const result = await this.executeAction(action, toolName, {
+        skipApprovalQueue: true,
+      })
+      const currentError = errorText(result)
+
+      if (!actionFailed(result)) {
+        return {
+          ok: true as const,
+          result,
+          attempts: attempt,
+          errorText: currentError,
+        }
+      }
+
+      lastResult = result
+      lastError = currentError
+
+      if (isUnsupportedSemanticError(currentError) || attempt >= SEMANTIC_ACTION_MAX_ATTEMPTS) {
+        break
+      }
+
+      await sleep(SEMANTIC_ACTION_RETRY_DELAY_MS)
+    }
+
+    return {
+      ok: false as const,
+      result: lastResult,
+      attempts: attempt,
+      errorText: lastError,
+    }
+  }
 
   async focusWindow(scene: DesktopScene, windowId: string) {
     const target = scene.windows.find(window => window.id === windowId)
@@ -54,7 +105,7 @@ export class DesktopActionService {
       }
     }
 
-    const focusResult = await this.executeAction({
+    const focusAttempt = await this.executeSemanticActionWithRetry({
       kind: 'focus_window',
       input: {
         windowId: target.id,
@@ -65,16 +116,15 @@ export class DesktopActionService {
         bounds: target.bounds,
         observedBounds: target.bounds,
       },
-    }, 'desktop_focus_window', {
-      skipApprovalQueue: true,
-    })
+    }, 'desktop_focus_window')
 
-    const focusErrorText = errorText(focusResult)
+    const focusResult = focusAttempt.result
+    const focusErrorText = focusAttempt.errorText
 
-    if (actionFailed(focusResult)) {
+    if (!focusAttempt.ok) {
       return {
         status: 'failed' as const,
-        reason: focusErrorText.includes('unsupported')
+        reason: isUnsupportedSemanticError(focusErrorText)
           ? `focus_window_unsupported:${target.id}`
           : `focus_window_failed:${target.id}`,
         detail: focusResult,
@@ -98,7 +148,7 @@ export class DesktopActionService {
       }
     }
 
-    const setBoundsResult = await this.executeAction({
+    const setBoundsAttempt = await this.executeSemanticActionWithRetry({
       kind: 'set_window_bounds',
       input: {
         windowId: target.id,
@@ -109,13 +159,13 @@ export class DesktopActionService {
         appName: target.appName,
         title: target.title,
       },
-    }, 'desktop_move_resize_window', {
-      skipApprovalQueue: true,
-    })
+    }, 'desktop_move_resize_window')
 
-    const setBoundsErrorText = errorText(setBoundsResult)
-    if (actionFailed(setBoundsResult)) {
-      if (setBoundsErrorText.includes('unsupported') || setBoundsErrorText.includes('not implement')) {
+    const setBoundsResult = setBoundsAttempt.result
+
+    const setBoundsErrorText = setBoundsAttempt.errorText
+    if (!setBoundsAttempt.ok) {
+      if (isUnsupportedSemanticError(setBoundsErrorText)) {
         return {
           status: 'unsupported',
           reason: `set_window_bounds_unsupported:${windowId}`,

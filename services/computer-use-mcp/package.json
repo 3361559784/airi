@@ -47,6 +47,7 @@
     "smoke:remote": "tsx ./src/bin/smoke-remote.ts",
     "smoke:stdio": "tsx ./src/bin/smoke-stdio.ts",
     "smoke:macos": "tsx ./src/bin/smoke-macos.ts",
+    "smoke:macos-control-quality": "tsx ./src/bin/smoke-macos-control-quality.ts",
     "smoke:coding-readonly": "tsx ./src/bin/smoke-coding-readonly.ts",
     "smoke:coding-worktree-two-file": "tsx ./src/bin/smoke-coding-worktree-two-file.ts",
     "smoke:coding-worktree-three-file": "tsx ./src/bin/smoke-coding-worktree-three-file.ts",

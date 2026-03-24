@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildDisplayInfoFromSnapshot, resolveRetinaScreenshotNormalization } from './runtime'
+import {
+  buildDisplayInfoFromSnapshot,
+  describeRetinaScreenshotAlignmentIssue,
+  resolveRetinaScreenshotNormalization,
+} from './runtime'
 
 describe('display runtime helpers', () => {
   it('builds combined display info for uniform-scale snapshots', () => {
@@ -64,5 +68,45 @@ describe('display runtime helpers', () => {
     })
 
     expect(plan).toBeUndefined()
+  })
+
+  it('describes mixed-scale physical-vs-logical mismatch explicitly', () => {
+    const note = describeRetinaScreenshotAlignmentIssue({
+      available: true,
+      platform: 'darwin',
+      logicalWidth: 2360,
+      logicalHeight: 1440,
+      pixelWidth: undefined,
+      pixelHeight: undefined,
+      scaleFactor: 2,
+      isRetina: true,
+      displays: [
+        {
+          displayId: 1,
+          isMain: true,
+          isBuiltIn: true,
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          visibleBounds: { x: 0, y: 0, width: 1280, height: 760 },
+          scaleFactor: 2,
+          pixelWidth: 2560,
+          pixelHeight: 1600,
+        },
+        {
+          displayId: 2,
+          isMain: false,
+          isBuiltIn: false,
+          bounds: { x: 1280, y: 0, width: 1080, height: 1440 },
+          visibleBounds: { x: 1280, y: 0, width: 1080, height: 1400 },
+          scaleFactor: 1,
+          pixelWidth: 1080,
+          pixelHeight: 1440,
+        },
+      ],
+    }, {
+      width: 3640,
+      height: 1600,
+    })
+
+    expect(note).toContain('mixed-scale multi-display')
   })
 })

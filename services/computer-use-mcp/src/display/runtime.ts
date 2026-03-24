@@ -20,6 +20,62 @@ function getUniformScaleFactor(snapshot: MultiDisplaySnapshot) {
     : undefined
 }
 
+function hasMixedScaleDisplays(displayInfo: DisplayInfo) {
+  const scales = (displayInfo.displays ?? [])
+    .map(display => display.scaleFactor)
+    .filter(scale => Number.isFinite(scale) && scale > 0)
+
+  if (scales.length < 2) {
+    return false
+  }
+
+  const first = scales[0]
+  return scales.some(scale => Math.abs(scale - first) >= 0.001)
+}
+
+function isLogicalPhysicalRetinaMismatch(
+  displayInfo: DisplayInfo,
+  screenshot: { width?: number, height?: number },
+) {
+  if (!displayInfo.available || !screenshot.width || !screenshot.height) {
+    return false
+  }
+
+  if (!displayInfo.logicalWidth || !displayInfo.logicalHeight) {
+    return false
+  }
+
+  if (displayInfo.logicalWidth === screenshot.width && displayInfo.logicalHeight === screenshot.height) {
+    return false
+  }
+
+  return displayInfo.pixelWidth === screenshot.width
+    && displayInfo.pixelHeight === screenshot.height
+}
+
+function isLikelyMixedScaleRetinaMismatch(
+  displayInfo: DisplayInfo,
+  screenshot: { width?: number, height?: number },
+) {
+  if (!displayInfo.available || !screenshot.width || !screenshot.height) {
+    return false
+  }
+
+  if (!displayInfo.logicalWidth || !displayInfo.logicalHeight) {
+    return false
+  }
+
+  if (!hasMixedScaleDisplays(displayInfo) || !displayInfo.isRetina) {
+    return false
+  }
+
+  if (displayInfo.logicalWidth === screenshot.width && displayInfo.logicalHeight === screenshot.height) {
+    return false
+  }
+
+  return screenshot.width > displayInfo.logicalWidth || screenshot.height > displayInfo.logicalHeight
+}
+
 export function buildDisplayInfoFromSnapshot(snapshot: MultiDisplaySnapshot): DisplayInfo {
   const main = snapshot.displays.find(display => display.isMain) ?? snapshot.displays[0]
   const uniformScaleFactor = getUniformScaleFactor(snapshot)
@@ -94,4 +150,19 @@ export function resolveRetinaScreenshotNormalization(
   }
 
   return undefined
+}
+
+export function describeRetinaScreenshotAlignmentIssue(
+  displayInfo: DisplayInfo,
+  screenshot: { width?: number, height?: number },
+) {
+  if (isLikelyMixedScaleRetinaMismatch(displayInfo, screenshot)) {
+    return `mixed-scale multi-display screenshot captured as physical pixels (${screenshot.width}x${screenshot.height}); global logical-point normalization is not deterministic yet`
+  }
+
+  if (!isLogicalPhysicalRetinaMismatch(displayInfo, screenshot)) {
+    return undefined
+  }
+
+  return `screenshot captured as physical pixels (${screenshot.width}x${screenshot.height}) while desktop actions use logical points`
 }
