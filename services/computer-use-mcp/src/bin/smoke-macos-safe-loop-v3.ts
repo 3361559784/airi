@@ -187,8 +187,8 @@ async function main() {
       },
     })
     const run = requireStructuredContent(runRaw, 'desktop_run_safe_agent_loop')
-    if (run.status !== 'ok' || run.safeLoopStatus !== 'completed') {
-      throw new Error(`desktop_run_safe_agent_loop expected ok/completed, got status=${String(run.status)} safeLoopStatus=${String(run.safeLoopStatus)}`)
+    if (run.status !== 'ok' || run.safeLoopStatus !== 'succeeded') {
+      throw new Error(`desktop_run_safe_agent_loop expected ok/succeeded, got status=${String(run.status)} safeLoopStatus=${String(run.safeLoopStatus)}`)
     }
 
     const traceRaw = await client.callTool({
@@ -217,8 +217,8 @@ async function main() {
       },
     })
     const leaseRequired = requireStructuredContent(leaseRequiredRaw, 'desktop_run_safe_agent_loop')
-    if (leaseRequired.status !== 'error' || leaseRequired.safeLoopStatus !== 'lease_required') {
-      throw new Error(`desktop_run_safe_agent_loop expected lease_required after interrupt, got status=${String(leaseRequired.status)} safeLoopStatus=${String(leaseRequired.safeLoopStatus)}`)
+    if (leaseRequired.status !== 'error' || leaseRequired.safeLoopStatus !== 'failed' || leaseRequired.failureClassification !== 'lease_required') {
+      throw new Error(`desktop_run_safe_agent_loop expected failed/lease_required after interrupt, got status=${String(leaseRequired.status)} safeLoopStatus=${String(leaseRequired.safeLoopStatus)} failureClassification=${String(leaseRequired.failureClassification)}`)
     }
 
     console.info(JSON.stringify({

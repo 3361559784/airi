@@ -6,17 +6,22 @@ import type {
   SessionTraceEntry,
   TerminalState,
 } from './types'
+import type { DesktopSafeLoopRun } from './desktop/types'
 
 import process from 'node:process'
+import { resolve } from 'node:path'
 
 import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
 
 export class ComputerUseSession {
   private initialized = false
   private pendingActions = new Map<string, PendingActionRecord>()
   private pendingApprovalTokens = new Map<string, string>()
   private traceEntries: SessionTraceEntry[] = []
+  private safeLoopRuns: DesktopSafeLoopRun[] = []
+  private readonly safeLoopRunLimit = 120
+  private readonly safeLoopRunsLogPath: string
   private pointerPosition?: { x: number, y: number }
   private operationsExecuted = 0
   private operationUnitsConsumed = 0
@@ -24,6 +29,7 @@ export class ComputerUseSession {
   private terminalState: TerminalState
 
   constructor(private readonly config: ComputerUseConfig) {
+    this.safeLoopRunsLogPath = resolve(config.sessionRoot, 'safe-loop-runs.jsonl')
     this.terminalState = {
       effectiveCwd: process.cwd(),
     }
@@ -35,7 +41,50 @@ export class ComputerUseSession {
 
     await mkdir(this.config.sessionRoot, { recursive: true })
     await mkdir(this.config.screenshotsDir, { recursive: true })
+    await this.loadSafeLoopRunsFromDisk()
     this.initialized = true
+  }
+
+  private upsertSafeLoopRun(run: DesktopSafeLoopRun) {
+    const index = this.safeLoopRuns.findIndex(item => item.runId === run.runId)
+    if (index >= 0) {
+      this.safeLoopRuns[index] = run
+    }
+    else {
+      this.safeLoopRuns.push(run)
+    }
+
+    if (this.safeLoopRuns.length > this.safeLoopRunLimit) {
+      this.safeLoopRuns.splice(0, this.safeLoopRuns.length - this.safeLoopRunLimit)
+    }
+  }
+
+  private async loadSafeLoopRunsFromDisk() {
+    try {
+      const raw = await readFile(this.safeLoopRunsLogPath, 'utf-8')
+      const lines = raw
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line)
+          if (!parsed || typeof parsed !== 'object' || typeof (parsed as { runId?: unknown }).runId !== 'string') {
+            continue
+          }
+          this.upsertSafeLoopRun(parsed as DesktopSafeLoopRun)
+        }
+        catch {
+          // Ignore malformed lines and continue loading subsequent records.
+        }
+      }
+    }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error
+      }
+    }
   }
 
   getSnapshot() {
@@ -45,6 +94,7 @@ export class ComputerUseSession {
       pendingActions: this.pendingActions.size,
       pointerPosition: this.pointerPosition,
       lastScreenshot: this.lastScreenshot,
+      safeLoopRunArtifacts: this.safeLoopRuns.length,
       auditLogPath: this.config.auditLogPath,
       screenshotsDir: this.config.screenshotsDir,
       terminalState: this.terminalState,
@@ -157,5 +207,14 @@ export class ComputerUseSession {
 
   getRecentTrace(limit = 50) {
     return this.traceEntries.slice(-Math.max(limit, 1))
+  }
+
+  async recordSafeLoopRun(run: DesktopSafeLoopRun) {
+    this.upsertSafeLoopRun(run)
+    await appendFile(this.safeLoopRunsLogPath, `${JSON.stringify(run)}\n`, 'utf-8')
+  }
+
+  getRecentSafeLoopRuns(limit = 20) {
+    return this.safeLoopRuns.slice(-Math.max(limit, 1))
   }
 }

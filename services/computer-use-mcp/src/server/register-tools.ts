@@ -1364,8 +1364,8 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
         stopOnVerificationFailure,
       })
 
-      const failed = result.status !== 'completed'
-      const summary = `Desktop safe loop ${failed ? 'stopped' : 'completed'}: ${result.status}; executed ${result.executedSteps}/${result.plan.requestedSteps} step(s).`
+      const failed = result.status !== 'succeeded'
+      const summary = `Desktop safe loop ${failed ? 'stopped' : 'succeeded'}: ${result.status}; executed ${result.executedSteps}/${result.plan.requestedSteps} step(s).`
 
       return {
         isError: failed,
@@ -1386,7 +1386,30 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
       limit: z.number().int().min(1).max(60).optional().describe('How many recent safe loop runs to return (default: 20).'),
     },
     async ({ limit }) => {
-      const runs = desktopControl.getSafeLoopTrace(limit)
+      const clampedLimit = Math.min(Math.max(Math.floor(limit || 20), 1), 60)
+      const memoryRuns = desktopControl.getSafeLoopTrace(clampedLimit * 2)
+      const durableRuns = typeof runtime.session.getRecentSafeLoopRuns === 'function'
+        ? runtime.session.getRecentSafeLoopRuns(clampedLimit * 2)
+        : []
+
+      // NOTICE: Prefer durable artifacts when the same runId exists in both
+      // sources so post-crash/restart snapshots stay authoritative.
+      const mergedRunsById = new Map<string, (typeof memoryRuns)[number]>()
+      for (const run of memoryRuns) {
+        mergedRunsById.set(run.runId, run)
+      }
+      for (const run of durableRuns) {
+        mergedRunsById.set(run.runId, run)
+      }
+
+      const runs = [...mergedRunsById.values()]
+        .sort((left, right) => {
+          const leftAt = Date.parse(left.finishedAt || left.startedAt || '') || 0
+          const rightAt = Date.parse(right.finishedAt || right.startedAt || '') || 0
+          return leftAt - rightAt
+        })
+        .slice(-clampedLimit)
+
       return {
         content: [textContent(`Safe loop runs returned: ${runs.length}`)],
         structuredContent: {

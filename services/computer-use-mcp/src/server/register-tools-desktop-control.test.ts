@@ -51,6 +51,10 @@ function makeExecutedResult(action: ActionInvocation): CallToolResult {
   }
 }
 
+async function sleep(ms: number) {
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, ms)))
+}
+
 function installPendingActionStore(runtime: ComputerUseServerRuntime) {
   const pendingActions = new Map<string, Record<string, unknown>>()
   const pendingApprovalTokens = new Map<string, string>()
@@ -102,6 +106,8 @@ describe('registerComputerUseTools: desktop control tools', () => {
         listPendingActions: vi.fn(() => []),
         removePendingAction: vi.fn(),
         record: vi.fn().mockResolvedValue(undefined),
+        recordSafeLoopRun: vi.fn().mockResolvedValue(undefined),
+        getRecentSafeLoopRuns: vi.fn(() => []),
         getBudgetState: vi.fn(() => ({ operationsExecuted: 0, operationUnitsConsumed: 0 })),
         getLastScreenshot: vi.fn(() => undefined),
         getSnapshot: vi.fn(() => ({ operationsExecuted: 0, operationUnitsConsumed: 0, pendingActions: [] })),
@@ -486,7 +492,8 @@ describe('registerComputerUseTools: desktop control tools', () => {
     expect(run.isError).toBe(true)
     expect(run.structuredContent).toMatchObject({
       status: 'error',
-      safeLoopStatus: 'lease_required',
+      safeLoopStatus: 'failed',
+      failureClassification: 'lease_required',
       errors: ['act_lease_required_before_safe_agent_loop'],
     })
     expect(executeAction).not.toHaveBeenCalled()
@@ -518,16 +525,29 @@ describe('registerComputerUseTools: desktop control tools', () => {
     expect(run.isError).not.toBe(true)
     expect(run.structuredContent).toMatchObject({
       status: 'ok',
-      safeLoopStatus: 'completed',
+      safeLoopStatus: 'succeeded',
       executedSteps: 1,
       verification: {
+        attempted: 1,
         passed: 1,
         failed: 0,
+        notApplicable: 0,
+        skipped: 0,
       },
+      stepResults: [
+        {
+          stepKind: 'focus_window',
+          actionStatus: 'completed',
+          verificationStatus: 'passed',
+        },
+      ],
       plan: {
         requestedSteps: 1,
+        cappedSteps: 1,
       },
     })
+
+    expect(runtime.session.recordSafeLoopRun).toHaveBeenCalledTimes(1)
 
     const trace = await invoke('desktop_get_safe_loop_trace', { limit: 5 })
     expect(trace.structuredContent).toMatchObject({
@@ -538,9 +558,234 @@ describe('registerComputerUseTools: desktop control tools', () => {
     expect(runs.length).toBeGreaterThan(0)
     expect(runs[0]).toMatchObject({
       objective: 'focus cursor window',
-      status: 'completed',
+      status: 'succeeded',
     })
 
     expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['focus_window'])
+  })
+
+  it('returns failed with verification classification when verify fails but stopOnVerificationFailure=false', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'verify mismatch with continue',
+      plan: [
+        {
+          kind: 'click',
+          x: 10,
+          y: 10,
+        },
+        {
+          kind: 'wait',
+          durationMs: 5,
+        },
+      ],
+      maxSteps: 2,
+      actionBudget: 4,
+      stopOnVerificationFailure: false,
+    })
+
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'failed',
+      failureClassification: 'verification_failed',
+      executedSteps: 2,
+      verification: {
+        attempted: 1,
+        passed: 0,
+        failed: 1,
+        notApplicable: 1,
+        skipped: 0,
+      },
+    })
+
+    const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults.length).toBe(2)
+    expect(stepResults[0]).toMatchObject({
+      stepKind: 'click',
+      verificationStatus: 'failed',
+    })
+    expect(stepResults[1]).toMatchObject({
+      stepKind: 'wait',
+      verificationStatus: 'not_applicable',
+    })
+  })
+
+  it('returns failed with budget classification when action budget is exhausted before step', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'budget gate',
+      plan: [{
+        kind: 'move_resize_window',
+        windowId: 'w-cursor',
+        bounds: { x: 4, y: 6, width: 600, height: 420 },
+      }],
+      maxSteps: 1,
+      actionBudget: 1,
+    })
+
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'failed',
+      failureClassification: 'budget_exhausted',
+      executedSteps: 0,
+    })
+
+    const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      stepKind: 'move_resize_window',
+      actionStatus: 'skipped',
+      verificationStatus: 'verification_skipped',
+    })
+    expect(executeAction).not.toHaveBeenCalled()
+  })
+
+  it('returns interrupted with lease_lost classification when lease expires mid-loop', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => {
+      if (action.kind === 'wait') {
+        await sleep(action.input.durationMs)
+      }
+      return makeExecutedResult(action)
+    })
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 250 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'lease expiry interrupt',
+      plan: [
+        { kind: 'wait', durationMs: 320 },
+        { kind: 'wait', durationMs: 10 },
+      ],
+      maxSteps: 2,
+      actionBudget: 2,
+    })
+
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'interrupted',
+      failureClassification: 'lease_lost',
+      interruptedBy: 'lease_lost',
+    })
+  })
+
+  it('returns interrupted with interruptedBy=user_input when user input preempts lease', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => {
+      if (action.kind === 'wait') {
+        await sleep(action.input.durationMs)
+      }
+      return makeExecutedResult(action)
+    })
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const runPromise = invoke('desktop_run_safe_agent_loop', {
+      objective: 'user preemption interrupt',
+      plan: [
+        { kind: 'wait', durationMs: 120 },
+        { kind: 'wait', durationMs: 120 },
+      ],
+      maxSteps: 2,
+      actionBudget: 4,
+    })
+
+    await sleep(25)
+    await invoke('desktop_report_user_input', { source: 'keyboard' })
+
+    const run = await runPromise
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'interrupted',
+      interruptedBy: 'user_input',
+    })
+    expect(run.structuredContent).not.toHaveProperty('failureClassification')
+  })
+
+  it('prefers durable safe-loop artifact when merging trace sources by runId', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'trace dedupe source preference',
+      plan: [{
+        kind: 'wait',
+        durationMs: 10,
+      }],
+      maxSteps: 1,
+      actionBudget: 2,
+    })
+
+    const runId = String((run.structuredContent as { runId?: string }).runId || '')
+    expect(runId).toBeTruthy()
+
+    const durableRun = {
+      ...(run.structuredContent as Record<string, unknown>),
+      objective: 'durable-objective-preferred',
+      status: 'failed',
+      failureClassification: 'verification_failed',
+      finishedAt: new Date(Date.now() + 10_000).toISOString(),
+    }
+
+    const getRecentSafeLoopRuns = runtime.session.getRecentSafeLoopRuns as unknown as ReturnType<typeof vi.fn>
+    getRecentSafeLoopRuns.mockReturnValue([durableRun])
+
+    const trace = await invoke('desktop_get_safe_loop_trace', { limit: 5 })
+    const runs = (trace.structuredContent as { runs?: Array<Record<string, unknown>> }).runs || []
+
+    const target = runs.find(item => item.runId === runId)
+    expect(target).toMatchObject({
+      objective: 'durable-objective-preferred',
+      status: 'failed',
+      failureClassification: 'verification_failed',
+    })
   })
 })

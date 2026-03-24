@@ -27,6 +27,12 @@ import type {
   WindowObservation,
   WorkflowStepTerminalBinding,
 } from './types'
+import type {
+  DesktopSafeLoopFailureClassification,
+  DesktopSafeLoopInterruptedBy,
+  DesktopSafeLoopRun,
+  DesktopSafeLoopStatus,
+} from './desktop/types'
 
 import { appNamesMatch } from './app-aliases'
 
@@ -839,6 +845,29 @@ export interface CodingRunState {
   roundContext?: CodingRoundContext
 }
 
+export interface SafeLoopRunSnapshot {
+  runId: string
+  objective: string
+  status: DesktopSafeLoopStatus
+  failureClassification?: DesktopSafeLoopFailureClassification
+  interruptedBy?: DesktopSafeLoopInterruptedBy
+  executedSteps: number
+  requestedSteps: number
+  verification: {
+    attempted: number
+    passed: number
+    failed: number
+    notApplicable: number
+    skipped: number
+  }
+  finishedAt: string
+}
+
+export interface SafeLoopState {
+  lastRun?: SafeLoopRunSnapshot
+  recentRuns: SafeLoopRunSnapshot[]
+}
+
 export interface RunState {
   // --- Desktop context --------------------------------------------------
   /** Most recently observed foreground app name. */
@@ -911,6 +940,10 @@ export interface RunState {
   /** State specific to the AIRI Coding Surface v1. */
   coding?: CodingRunState
 
+  // --- Desktop safe loop context ----------------------------------------
+  /** Latest safe-loop final artifacts (memory snapshot for transparency). */
+  safeLoop?: SafeLoopState
+
   // --- Meta -------------------------------------------------------------
   /** ISO timestamp of the last state update. */
   updatedAt: string
@@ -931,6 +964,9 @@ export class RunStateManager {
       workflowStepTerminalBindings: [],
       ptyApprovalGrants: [],
       ptyAuditLog: [],
+      safeLoop: {
+        recentRuns: [],
+      },
       updatedAt: new Date().toISOString(),
     }
   }
@@ -1234,6 +1270,37 @@ export class RunStateManager {
 
   updatePolicyDecision(decision: PolicyDecision) {
     this.state.lastPolicyDecision = decision
+    this.touch()
+  }
+
+  updateSafeLoopRun(run: DesktopSafeLoopRun) {
+    const snapshot: SafeLoopRunSnapshot = {
+      runId: run.runId,
+      objective: run.objective,
+      status: run.status,
+      failureClassification: run.failureClassification,
+      interruptedBy: run.interruptedBy,
+      executedSteps: run.executedSteps,
+      requestedSteps: run.plan.requestedSteps,
+      verification: {
+        attempted: run.verification.attempted,
+        passed: run.verification.passed,
+        failed: run.verification.failed,
+        notApplicable: run.verification.notApplicable,
+        skipped: run.verification.skipped,
+      },
+      finishedAt: run.finishedAt,
+    }
+
+    const recentRuns = [
+      ...(this.state.safeLoop?.recentRuns || []).filter(item => item.runId !== snapshot.runId),
+      snapshot,
+    ].slice(-20)
+
+    this.state.safeLoop = {
+      lastRun: snapshot,
+      recentRuns,
+    }
     this.touch()
   }
 

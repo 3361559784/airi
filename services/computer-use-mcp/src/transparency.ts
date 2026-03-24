@@ -476,6 +476,23 @@ export function summarizeRunState(state: RunState): string {
     parts.push(summarizeTaskProgress(state.activeTask))
   }
 
+  // Desktop safe-loop
+  if (state.safeLoop?.lastRun) {
+    const lastRun = state.safeLoop.lastRun
+    const safeLoopSummary = [
+      `Safe loop: ${lastRun.status}`,
+      `objective="${lastRun.objective}"`,
+      `steps=${lastRun.executedSteps}/${lastRun.requestedSteps}`,
+      `verify=${lastRun.verification.passed}/${lastRun.verification.attempted}`,
+      `verifySkipped=${lastRun.verification.skipped}`,
+      `verifyN/A=${lastRun.verification.notApplicable}`,
+      lastRun.failureClassification ? `failure=${lastRun.failureClassification}` : undefined,
+      lastRun.interruptedBy ? `interruptedBy=${lastRun.interruptedBy}` : undefined,
+    ].filter(Boolean).join(', ')
+
+    parts.push(safeLoopSummary)
+  }
+
   // Task memory
   if (state.taskMemory) {
     const tm = state.taskMemory

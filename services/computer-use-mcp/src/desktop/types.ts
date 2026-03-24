@@ -121,16 +121,65 @@ export interface DesktopSafeLoopTraceEntry {
 }
 
 export interface DesktopSafeLoopVerificationSummary {
+  attempted: number
   passed: number
   failed: number
+  notApplicable: number
+  skipped: number
 }
 
 export type DesktopSafeLoopStatus
-  = | 'completed'
-    | 'interrupted'
+  = | 'succeeded'
     | 'failed'
-    | 'lease_required'
+    | 'interrupted'
+
+export type DesktopSafeLoopFailureClassification
+  = | 'lease_required'
+    | 'lease_lost'
     | 'budget_exhausted'
+    | 'action_failed'
+    | 'verification_failed'
+    | 'runtime_error'
+
+export type DesktopSafeLoopInterruptedBy
+  = | 'user_input'
+    | 'lease_lost'
+    | 'unknown'
+
+export interface DesktopSafeLoopSceneSummary {
+  windowCount: number
+  focusedApp?: string
+  focusedWindowId?: string
+  pointer: { x: number, y: number }
+}
+
+export type DesktopSafeLoopStepActionStatus
+  = | 'completed'
+    | 'failed'
+    | 'interrupted'
+    | 'skipped'
+
+export type DesktopSafeLoopStepVerificationStatus
+  = | 'passed'
+    | 'failed'
+    | 'not_applicable'
+    | 'verification_skipped'
+
+export interface DesktopSafeLoopStepResult {
+  stepIndex: number
+  stepKind: DesktopActionPlanStep['kind']
+  startedAt: string
+  finishedAt: string
+  actionStatus: DesktopSafeLoopStepActionStatus
+  verificationStatus: DesktopSafeLoopStepVerificationStatus
+  stepCost: number
+  remainingBudgetBeforeStep: number
+  remainingBudgetAfterStep: number
+  reason: string
+  sceneBefore?: DesktopSafeLoopSceneSummary
+  sceneAfter?: DesktopSafeLoopSceneSummary
+  verificationDetails?: Record<string, unknown>
+}
 
 export interface DesktopSafeLoopRequest {
   objective: string
@@ -144,15 +193,19 @@ export interface DesktopSafeLoopRun {
   runId: string
   objective: string
   status: DesktopSafeLoopStatus
+  failureClassification?: DesktopSafeLoopFailureClassification
+  interruptedBy?: DesktopSafeLoopInterruptedBy
   startedAt: string
   finishedAt: string
   executedSteps: number
   remainingBudget: number
   verification: DesktopSafeLoopVerificationSummary
+  stepResults: DesktopSafeLoopStepResult[]
   errors: string[]
   trace: DesktopSafeLoopTraceEntry[]
   plan: {
     requestedSteps: number
+    cappedSteps: number
     executedStepKinds: DesktopActionPlanStep['kind'][]
   }
 }

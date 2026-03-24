@@ -4,8 +4,12 @@ import type {
   ControlLeaseKind,
   DesktopActionPlan,
   DesktopActionPlanStep,
+  DesktopSafeLoopFailureClassification,
+  DesktopSafeLoopInterruptedBy,
   DesktopSafeLoopRequest,
   DesktopSafeLoopRun,
+  DesktopSafeLoopSceneSummary,
+  DesktopSafeLoopStepResult,
   LayoutPresetId,
 } from './types'
 
@@ -14,6 +18,12 @@ import { ControlArbiter } from './control-arbiter'
 import { GhostPointerService } from './ghost-pointer-service'
 import { DesktopIntentService } from './intent-service'
 import { DesktopSceneService } from './scene-service'
+
+interface DesktopSafeLoopVerifyResult {
+  status: 'passed' | 'failed' | 'not_applicable'
+  reason: string
+  details?: Record<string, unknown>
+}
 
 export class DesktopControlRuntime {
   readonly arbiter = new ControlArbiter()
@@ -193,7 +203,7 @@ export class DesktopControlRuntime {
   private verifyLoopStep(params: {
     step: DesktopActionPlanStep
     sceneAfterAction: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
-  }) {
+  }): DesktopSafeLoopVerifyResult {
     const { step, sceneAfterAction } = params
 
     if (step.kind === 'focus_window') {
@@ -201,7 +211,7 @@ export class DesktopControlRuntime {
       const matched = sceneAfterAction.focusedWindowId === step.windowId || focusedWindow?.id === step.windowId
       if (!matched) {
         return {
-          ok: false,
+          status: 'failed',
           reason: 'verify_focus_window_failed',
           details: {
             expectedWindowId: step.windowId,
@@ -212,7 +222,7 @@ export class DesktopControlRuntime {
       }
 
       return {
-        ok: true,
+        status: 'passed',
         reason: 'verify_focus_window_passed',
       }
     }
@@ -221,7 +231,7 @@ export class DesktopControlRuntime {
       const target = sceneAfterAction.windows.find(window => window.id === step.windowId)
       if (!target) {
         return {
-          ok: false,
+          status: 'failed',
           reason: 'verify_set_window_bounds_window_missing',
           details: {
             expectedWindowId: step.windowId,
@@ -238,7 +248,7 @@ export class DesktopControlRuntime {
 
       if (!matched) {
         return {
-          ok: false,
+          status: 'failed',
           reason: 'verify_set_window_bounds_failed',
           details: {
             expectedBounds: step.bounds,
@@ -249,7 +259,7 @@ export class DesktopControlRuntime {
       }
 
       return {
-        ok: true,
+        status: 'passed',
         reason: 'verify_set_window_bounds_passed',
       }
     }
@@ -260,7 +270,7 @@ export class DesktopControlRuntime {
 
       if (!pointerMatched) {
         return {
-          ok: false,
+          status: 'failed',
           reason: 'verify_click_pointer_mismatch',
           details: {
             expectedPointer: { x: step.x, y: step.y },
@@ -270,14 +280,69 @@ export class DesktopControlRuntime {
       }
 
       return {
-        ok: true,
+        status: 'passed',
         reason: 'verify_click_pointer_passed',
       }
     }
 
     return {
-      ok: true,
-      reason: 'verify_wait_passed',
+      status: 'not_applicable',
+      reason: 'verify_not_applicable_for_wait',
+    }
+  }
+
+  private toSafeLoopSceneSummary(scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>): DesktopSafeLoopSceneSummary {
+    return {
+      windowCount: scene.windows.length,
+      focusedApp: scene.focusedApp,
+      focusedWindowId: scene.focusedWindowId,
+      pointer: {
+        x: scene.pointer.x,
+        y: scene.pointer.y,
+      },
+    }
+  }
+
+  private resolveLeaseInterruptionContext(): {
+    failureClassification?: DesktopSafeLoopFailureClassification
+    interruptedBy: DesktopSafeLoopInterruptedBy
+    error: string
+    traceMessage: string
+  } {
+    const { mode } = this.arbiter.getState()
+    if (mode === 'interrupted') {
+      return {
+        interruptedBy: 'user_input',
+        error: 'safe_loop_user_input_preempted_airi_lease',
+        traceMessage: 'safe_loop_interrupted_due_to_user_input_preemption',
+      }
+    }
+
+    return {
+      failureClassification: 'lease_lost',
+      interruptedBy: 'lease_lost',
+      error: 'act_lease_lost_during_safe_agent_loop',
+      traceMessage: 'safe_loop_interrupted_due_to_lease_loss',
+    }
+  }
+
+  private async persistSafeLoopRunArtifact(run: DesktopSafeLoopRun) {
+    this.rememberSafeLoopRun(run)
+
+    try {
+      await this.runtime.session.recordSafeLoopRun?.(run)
+    }
+    catch {
+      // NOTICE: durable artifact write failures are side-channel only and
+      // must never override the main safe-loop execution status.
+    }
+
+    try {
+      this.runtime.stateManager.updateSafeLoopRun?.(run)
+    }
+    catch {
+      // NOTICE: run-state projection failure should not affect safe-loop
+      // runtime result semantics.
     }
   }
 
@@ -287,6 +352,7 @@ export class DesktopControlRuntime {
     const trace: DesktopSafeLoopRun['trace'] = []
     const errors: string[] = []
     const executedStepKinds: DesktopActionPlanStep['kind'][] = []
+    const stepResults: DesktopSafeLoopStepResult[] = []
 
     const appendTrace = (entry: Omit<DesktopSafeLoopRun['trace'][number], 'at'>) => {
       trace.push({
@@ -295,17 +361,20 @@ export class DesktopControlRuntime {
       })
     }
 
-    const finish = (status: DesktopSafeLoopRun['status'], params: {
+    const finish = async (status: DesktopSafeLoopRun['status'], params: {
       executedSteps: number
       remainingBudget: number
       verificationPassed: number
       verificationFailed: number
+      cappedSteps: number
+      failureClassification?: DesktopSafeLoopFailureClassification
+      interruptedBy?: DesktopSafeLoopInterruptedBy
     }) => {
       const finishedAt = new Date().toISOString()
-      if (status === 'completed') {
+      if (status === 'succeeded') {
         appendTrace({
           phase: 'completed',
-          message: 'desktop_safe_agent_loop_completed',
+          message: 'desktop_safe_agent_loop_succeeded',
           details: {
             executedSteps: params.executedSteps,
             remainingBudget: params.remainingBudget,
@@ -319,204 +388,358 @@ export class DesktopControlRuntime {
           details: {
             executedSteps: params.executedSteps,
             remainingBudget: params.remainingBudget,
+            failureClassification: params.failureClassification,
+            interruptedBy: params.interruptedBy,
             errors,
           },
         })
       }
 
+      const verificationNotApplicable = stepResults.filter(step => step.verificationStatus === 'not_applicable').length
+      const verificationSkipped = stepResults.filter(step => step.verificationStatus === 'verification_skipped').length
+
       const run: DesktopSafeLoopRun = {
         runId,
         objective: request.objective,
         status,
+        failureClassification: params.failureClassification,
+        interruptedBy: params.interruptedBy,
         startedAt,
         finishedAt,
         executedSteps: params.executedSteps,
         remainingBudget: params.remainingBudget,
         verification: {
+          attempted: params.verificationPassed + params.verificationFailed,
           passed: params.verificationPassed,
           failed: params.verificationFailed,
+          notApplicable: verificationNotApplicable,
+          skipped: verificationSkipped,
         },
+        stepResults,
         errors,
         trace,
         plan: {
           requestedSteps: request.plan.length,
+          cappedSteps: params.cappedSteps,
           executedStepKinds,
         },
       }
 
-      this.rememberSafeLoopRun(run)
+      await this.persistSafeLoopRunArtifact(run)
       return run
     }
 
-    if (!this.arbiter.hasActiveLease('act')) {
-      errors.push('act_lease_required_before_safe_agent_loop')
-      appendTrace({
-        phase: 'interrupt',
-        message: 'safe_loop_start_blocked_no_act_lease',
-      })
-      return finish('lease_required', {
-        executedSteps: 0,
-        remainingBudget: 0,
-        verificationPassed: 0,
-        verificationFailed: 0,
-      })
-    }
-
-    const requestedMaxSteps = Number.isFinite(request.maxSteps) ? Number(request.maxSteps) : 6
-    const maxSteps = Math.min(Math.max(Math.floor(requestedMaxSteps), 1), 20)
-    const effectiveSteps = request.plan.slice(0, maxSteps)
-
-    const defaultBudget = Math.max(1, effectiveSteps.reduce((sum, step) => sum + this.estimateLoopStepCost(step), 0))
-    const requestedBudget = Number.isFinite(request.actionBudget) ? Number(request.actionBudget) : defaultBudget
-    let remainingBudget = Math.min(Math.max(Math.floor(requestedBudget), 1), 40)
-    const stopOnVerificationFailure = request.stopOnVerificationFailure !== false
-
-    let executedSteps = 0
-    let verificationPassed = 0
-    let verificationFailed = 0
-
-    for (const [stepIndex, step] of effectiveSteps.entries()) {
+    try {
       if (!this.arbiter.hasActiveLease('act')) {
-        errors.push('act_lease_lost_during_safe_agent_loop')
+        errors.push('act_lease_required_before_safe_agent_loop')
         appendTrace({
           phase: 'interrupt',
-          stepIndex,
-          stepKind: step.kind,
-          message: 'safe_loop_interrupted_due_to_lease_loss',
+          message: 'safe_loop_start_blocked_no_act_lease',
         })
-        return finish('interrupted', {
-          executedSteps,
-          remainingBudget,
-          verificationPassed,
-          verificationFailed,
-        })
-      }
-
-      const stepCost = this.estimateLoopStepCost(step)
-      if (stepCost > remainingBudget) {
-        errors.push('safe_loop_action_budget_exhausted')
-        appendTrace({
-          phase: 'budget',
-          stepIndex,
-          stepKind: step.kind,
-          message: 'safe_loop_budget_exhausted_before_step',
-          details: {
-            requiredCost: stepCost,
-            remainingBudget,
-          },
-        })
-        return finish('budget_exhausted', {
-          executedSteps,
-          remainingBudget,
-          verificationPassed,
-          verificationFailed,
+        return await finish('failed', {
+          executedSteps: 0,
+          remainingBudget: 0,
+          verificationPassed: 0,
+          verificationFailed: 0,
+          cappedSteps: 0,
+          failureClassification: 'lease_required',
         })
       }
 
-      const sceneBeforeAction = await this.observeScene()
-      appendTrace({
-        phase: 'observe',
-        stepIndex,
-        stepKind: step.kind,
-        message: 'safe_loop_scene_observed_before_action',
-        details: {
-          windowCount: sceneBeforeAction.windows.length,
-          focusedWindowId: sceneBeforeAction.focusedWindowId,
-        },
-      })
+      const requestedMaxSteps = Number.isFinite(request.maxSteps) ? Number(request.maxSteps) : 6
+      const maxSteps = Math.min(Math.max(Math.floor(requestedMaxSteps), 1), 20)
+      const effectiveSteps = request.plan.slice(0, maxSteps)
 
-      appendTrace({
-        phase: 'decide',
-        stepIndex,
-        stepKind: step.kind,
-        message: 'safe_loop_step_selected',
-        details: {
-          step,
-          stepCost,
-          remainingBudget,
-        },
-      })
+      const defaultBudget = Math.max(1, effectiveSteps.reduce((sum, step) => sum + this.estimateLoopStepCost(step), 0))
+      const requestedBudget = Number.isFinite(request.actionBudget) ? Number(request.actionBudget) : defaultBudget
+      let remainingBudget = Math.min(Math.max(Math.floor(requestedBudget), 1), 40)
+      const stopOnVerificationFailure = request.stopOnVerificationFailure !== false
 
-      const actionResult = await this.actionService.runActionPlan(sceneBeforeAction, {
-        id: `${runId}_step_${stepIndex}`,
-        createdAt: new Date().toISOString(),
-        steps: [step],
-      }, {
-        shouldContinue: () => this.arbiter.hasActiveLease('act'),
-      })
-      remainingBudget -= stepCost
+      let executedSteps = 0
+      let verificationPassed = 0
+      let verificationFailed = 0
 
-      appendTrace({
-        phase: 'act',
-        stepIndex,
-        stepKind: step.kind,
-        message: `safe_loop_step_act_${actionResult.status}`,
-        details: {
-          actionResult,
-          remainingBudget,
-        },
-      })
+      for (const [stepIndex, step] of effectiveSteps.entries()) {
+        const stepCost = this.estimateLoopStepCost(step)
+        const stepStartedAt = new Date().toISOString()
+        const remainingBudgetBeforeStep = remainingBudget
 
-      if (actionResult.status === 'interrupted') {
-        errors.push('safe_loop_interrupted_while_executing_step')
-        return finish('interrupted', {
-          executedSteps,
-          remainingBudget,
-          verificationPassed,
-          verificationFailed,
-        })
-      }
+        if (!this.arbiter.hasActiveLease('act')) {
+          const interruptionContext = this.resolveLeaseInterruptionContext()
+          errors.push(interruptionContext.error)
+          const stepResult: DesktopSafeLoopStepResult = {
+            stepIndex,
+            stepKind: step.kind,
+            startedAt: stepStartedAt,
+            finishedAt: new Date().toISOString(),
+            actionStatus: 'interrupted',
+            verificationStatus: 'verification_skipped',
+            stepCost,
+            remainingBudgetBeforeStep,
+            remainingBudgetAfterStep: remainingBudget,
+            reason: interruptionContext.traceMessage,
+          }
+          stepResults.push(stepResult)
 
-      if (actionResult.status !== 'completed') {
-        errors.push(actionResult.errors[0] || `safe_loop_step_failed:${step.kind}`)
-        return finish('failed', {
-          executedSteps,
-          remainingBudget,
-          verificationPassed,
-          verificationFailed,
-        })
-      }
+          appendTrace({
+            phase: 'interrupt',
+            stepIndex,
+            stepKind: step.kind,
+            message: interruptionContext.traceMessage,
+            details: {
+              interruptedBy: interruptionContext.interruptedBy,
+              failureClassification: interruptionContext.failureClassification,
+            },
+          })
 
-      executedSteps += 1
-      executedStepKinds.push(step.kind)
-
-      const sceneAfterAction = await this.observeScene()
-      const verification = this.verifyLoopStep({
-        step,
-        sceneAfterAction,
-      })
-
-      appendTrace({
-        phase: 'verify',
-        stepIndex,
-        stepKind: step.kind,
-        message: verification.reason,
-        details: verification.details,
-      })
-
-      if (!verification.ok) {
-        verificationFailed += 1
-        errors.push(verification.reason)
-        if (stopOnVerificationFailure) {
-          return finish('failed', {
+          return await finish('interrupted', {
             executedSteps,
             remainingBudget,
             verificationPassed,
             verificationFailed,
+            cappedSteps: effectiveSteps.length,
+            failureClassification: interruptionContext.failureClassification,
+            interruptedBy: interruptionContext.interruptedBy,
           })
         }
-      }
-      else {
-        verificationPassed += 1
-      }
-    }
 
-    return finish('completed', {
-      executedSteps,
-      remainingBudget,
-      verificationPassed,
-      verificationFailed,
-    })
+        if (stepCost > remainingBudget) {
+          const budgetError = 'safe_loop_action_budget_exhausted'
+          errors.push(budgetError)
+
+          const stepResult: DesktopSafeLoopStepResult = {
+            stepIndex,
+            stepKind: step.kind,
+            startedAt: stepStartedAt,
+            finishedAt: new Date().toISOString(),
+            actionStatus: 'skipped',
+            verificationStatus: 'verification_skipped',
+            stepCost,
+            remainingBudgetBeforeStep,
+            remainingBudgetAfterStep: remainingBudget,
+            reason: budgetError,
+          }
+          stepResults.push(stepResult)
+
+          appendTrace({
+            phase: 'budget',
+            stepIndex,
+            stepKind: step.kind,
+            message: 'safe_loop_budget_exhausted_before_step',
+            details: {
+              requiredCost: stepCost,
+              remainingBudget,
+            },
+          })
+
+          return await finish('failed', {
+            executedSteps,
+            remainingBudget,
+            verificationPassed,
+            verificationFailed,
+            cappedSteps: effectiveSteps.length,
+            failureClassification: 'budget_exhausted',
+          })
+        }
+
+        const sceneBeforeAction = await this.observeScene()
+        const sceneBefore = this.toSafeLoopSceneSummary(sceneBeforeAction)
+        appendTrace({
+          phase: 'observe',
+          stepIndex,
+          stepKind: step.kind,
+          message: 'safe_loop_scene_observed_before_action',
+          details: {
+            windowCount: sceneBeforeAction.windows.length,
+            focusedWindowId: sceneBeforeAction.focusedWindowId,
+          },
+        })
+
+        appendTrace({
+          phase: 'decide',
+          stepIndex,
+          stepKind: step.kind,
+          message: 'safe_loop_step_selected',
+          details: {
+            step,
+            stepCost,
+            remainingBudget,
+          },
+        })
+
+        const actionResult = await this.actionService.runActionPlan(sceneBeforeAction, {
+          id: `${runId}_step_${stepIndex}`,
+          createdAt: new Date().toISOString(),
+          steps: [step],
+        }, {
+          shouldContinue: () => this.arbiter.hasActiveLease('act'),
+        })
+        remainingBudget -= stepCost
+
+        appendTrace({
+          phase: 'act',
+          stepIndex,
+          stepKind: step.kind,
+          message: `safe_loop_step_act_${actionResult.status}`,
+          details: {
+            actionResult,
+            remainingBudget,
+          },
+        })
+
+        if (actionResult.status === 'interrupted') {
+          const interruptionContext = this.resolveLeaseInterruptionContext()
+          errors.push(interruptionContext.error)
+
+          const stepResult: DesktopSafeLoopStepResult = {
+            stepIndex,
+            stepKind: step.kind,
+            startedAt: stepStartedAt,
+            finishedAt: new Date().toISOString(),
+            actionStatus: 'interrupted',
+            verificationStatus: 'verification_skipped',
+            stepCost,
+            remainingBudgetBeforeStep,
+            remainingBudgetAfterStep: remainingBudget,
+            reason: interruptionContext.traceMessage,
+            sceneBefore,
+          }
+          stepResults.push(stepResult)
+
+          return await finish('interrupted', {
+            executedSteps,
+            remainingBudget,
+            verificationPassed,
+            verificationFailed,
+            cappedSteps: effectiveSteps.length,
+            failureClassification: interruptionContext.failureClassification,
+            interruptedBy: interruptionContext.interruptedBy,
+          })
+        }
+
+        if (actionResult.status !== 'completed') {
+          const failureReason = actionResult.errors[0] || `safe_loop_step_failed:${step.kind}`
+          errors.push(failureReason)
+
+          const stepResult: DesktopSafeLoopStepResult = {
+            stepIndex,
+            stepKind: step.kind,
+            startedAt: stepStartedAt,
+            finishedAt: new Date().toISOString(),
+            actionStatus: 'failed',
+            verificationStatus: 'verification_skipped',
+            stepCost,
+            remainingBudgetBeforeStep,
+            remainingBudgetAfterStep: remainingBudget,
+            reason: failureReason,
+            sceneBefore,
+          }
+          stepResults.push(stepResult)
+
+          return await finish('failed', {
+            executedSteps,
+            remainingBudget,
+            verificationPassed,
+            verificationFailed,
+            cappedSteps: effectiveSteps.length,
+            failureClassification: 'action_failed',
+          })
+        }
+
+        executedSteps += 1
+        executedStepKinds.push(step.kind)
+
+        const sceneAfterAction = await this.observeScene()
+        const sceneAfter = this.toSafeLoopSceneSummary(sceneAfterAction)
+        const verification = this.verifyLoopStep({
+          step,
+          sceneAfterAction,
+        })
+
+        const stepResult: DesktopSafeLoopStepResult = {
+          stepIndex,
+          stepKind: step.kind,
+          startedAt: stepStartedAt,
+          finishedAt: new Date().toISOString(),
+          actionStatus: 'completed',
+          verificationStatus: verification.status,
+          stepCost,
+          remainingBudgetBeforeStep,
+          remainingBudgetAfterStep: remainingBudget,
+          reason: verification.reason,
+          sceneBefore,
+          sceneAfter,
+          verificationDetails: verification.details,
+        }
+        stepResults.push(stepResult)
+
+        appendTrace({
+          phase: 'verify',
+          stepIndex,
+          stepKind: step.kind,
+          message: verification.reason,
+          details: verification.details,
+        })
+
+        if (verification.status === 'failed') {
+          verificationFailed += 1
+          errors.push(verification.reason)
+          if (stopOnVerificationFailure) {
+            return await finish('failed', {
+              executedSteps,
+              remainingBudget,
+              verificationPassed,
+              verificationFailed,
+              cappedSteps: effectiveSteps.length,
+              failureClassification: 'verification_failed',
+            })
+          }
+        }
+        else if (verification.status === 'passed') {
+          verificationPassed += 1
+        }
+      }
+
+      if (verificationFailed > 0) {
+        return await finish('failed', {
+          executedSteps,
+          remainingBudget,
+          verificationPassed,
+          verificationFailed,
+          cappedSteps: effectiveSteps.length,
+          failureClassification: 'verification_failed',
+        })
+      }
+
+      return await finish('succeeded', {
+        executedSteps,
+        remainingBudget,
+        verificationPassed,
+        verificationFailed,
+        cappedSteps: effectiveSteps.length,
+      })
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      errors.push(`safe_loop_runtime_error:${message}`)
+
+      appendTrace({
+        phase: 'failed',
+        message: 'safe_loop_runtime_exception',
+        details: {
+          error: message,
+        },
+      })
+
+      return await finish('failed', {
+        executedSteps: executedStepKinds.length,
+        remainingBudget: 0,
+        verificationPassed: 0,
+        verificationFailed: 0,
+        cappedSteps: request.plan.length,
+        failureClassification: 'runtime_error',
+      })
+    }
   }
 }
 
