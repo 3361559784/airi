@@ -463,4 +463,84 @@ describe('registerComputerUseTools: desktop control tools', () => {
       reason: 'act_lease_required_before_focus_window',
     })
   })
+
+  it('requires act lease before running desktop safe agent loop', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'focus cursor window',
+      plan: [{
+        kind: 'focus_window',
+        windowId: 'w-cursor',
+      }],
+    })
+
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'lease_required',
+      errors: ['act_lease_required_before_safe_agent_loop'],
+    })
+    expect(executeAction).not.toHaveBeenCalled()
+  })
+
+  it('runs desktop safe agent loop with observe/act/verify and stores trace', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'focus cursor window',
+      plan: [{
+        kind: 'focus_window',
+        windowId: 'w-cursor',
+      }],
+      maxSteps: 1,
+      actionBudget: 2,
+    })
+
+    expect(run.isError).not.toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'ok',
+      safeLoopStatus: 'completed',
+      executedSteps: 1,
+      verification: {
+        passed: 1,
+        failed: 0,
+      },
+      plan: {
+        requestedSteps: 1,
+      },
+    })
+
+    const trace = await invoke('desktop_get_safe_loop_trace', { limit: 5 })
+    expect(trace.structuredContent).toMatchObject({
+      status: 'ok',
+    })
+
+    const runs = (trace.structuredContent as { runs?: Array<{ objective?: string, status?: string }> }).runs || []
+    expect(runs.length).toBeGreaterThan(0)
+    expect(runs[0]).toMatchObject({
+      objective: 'focus cursor window',
+      status: 'completed',
+    })
+
+    expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['focus_window'])
+  })
 })

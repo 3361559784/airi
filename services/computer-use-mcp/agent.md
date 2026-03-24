@@ -28,6 +28,7 @@ The important truth is:
 - The AIRI chat terminal demo is now aligned with terminal lane v2 and no longer pre-creates PTY.
 - The desktop shell now distinguishes `pty_session` from `terminal_and_apps`.
 - AIRI chat self-acquire is now part of the strict release gate set, so PTY mainline support is no longer intentionally held back.
+- Desktop v3 now has a minimal safe-loop surface (`desktop_run_safe_agent_loop`) with observe/decide/act/verify phases, action budget guardrails, lease-loss interruption behavior, and queryable local trace (`desktop_get_safe_loop_trace`).
 
 Do not rely on compressed chat summaries to resume this work. Use this file as the handoff source of truth and update it when terminal-lane behavior changes materially.
 
@@ -160,6 +161,18 @@ second per-step approval queue.
 - `desktop_preview_layout`
 - `desktop_focus_window`
 - `desktop_apply_layout`
+
+### v3 safe-loop tools (new)
+
+- `desktop_run_safe_agent_loop`
+- `desktop_get_safe_loop_trace`
+
+Current v3 safe-loop posture:
+
+- deterministic plan-in, guarded execution out
+- explicit phase trace: observe / decide / act / verify
+- action budget and lease-loss interruption are enforced inside the loop
+- trace is queryable via MCP without parsing JSONL manually
 
 ### Internal-only in v1
 
@@ -385,6 +398,7 @@ If you are continuing desktop control work, read these first:
 8. `src/preflight.ts`
 9. `src/server/register-tools-desktop-control.test.ts`
 10. `src/bin/smoke-macos.ts`
+11. `src/bin/smoke-macos-safe-loop-v3.ts`
 
 That set is enough to reconstruct the current macOS desktop-control lane without starting from terminal-only entrypoints.
 
@@ -402,6 +416,7 @@ Use these as the baseline checks for terminal lane work:
 ### Core test coverage
 
 - `pnpm -F @proj-airi/computer-use-mcp exec vitest run --config ./vitest.config.ts`
+- `pnpm -F @proj-airi/computer-use-mcp exec vitest run src/server/register-tools-desktop-control.test.ts --config ./vitest.config.ts`
 
 ### Typecheck
 

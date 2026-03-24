@@ -100,3 +100,59 @@ export interface DesktopActionPlanResult {
   errors: string[]
   details: Record<string, unknown>[]
 }
+
+export type DesktopSafeLoopPhase
+  = | 'observe'
+    | 'decide'
+    | 'act'
+    | 'verify'
+    | 'interrupt'
+    | 'budget'
+    | 'completed'
+    | 'failed'
+
+export interface DesktopSafeLoopTraceEntry {
+  at: string
+  phase: DesktopSafeLoopPhase
+  stepIndex?: number
+  stepKind?: DesktopActionPlanStep['kind']
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface DesktopSafeLoopVerificationSummary {
+  passed: number
+  failed: number
+}
+
+export type DesktopSafeLoopStatus
+  = | 'completed'
+    | 'interrupted'
+    | 'failed'
+    | 'lease_required'
+    | 'budget_exhausted'
+
+export interface DesktopSafeLoopRequest {
+  objective: string
+  plan: DesktopActionPlanStep[]
+  maxSteps?: number
+  actionBudget?: number
+  stopOnVerificationFailure?: boolean
+}
+
+export interface DesktopSafeLoopRun {
+  runId: string
+  objective: string
+  status: DesktopSafeLoopStatus
+  startedAt: string
+  finishedAt: string
+  executedSteps: number
+  remainingBudget: number
+  verification: DesktopSafeLoopVerificationSummary
+  errors: string[]
+  trace: DesktopSafeLoopTraceEntry[]
+  plan: {
+    requestedSteps: number
+    executedStepKinds: DesktopActionPlanStep['kind'][]
+  }
+}

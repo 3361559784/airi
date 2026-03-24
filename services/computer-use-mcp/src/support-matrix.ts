@@ -179,6 +179,14 @@ export const supportMatrix: SupportMatrixEntry[] = [
   },
   {
     lane: 'desktop-native',
+    id: 'desktop_safe_agent_loop_v3',
+    label: 'Safe desktop agent loop (observe/decide/act/verify + budget + interrupt + trace)',
+    level: 'covered',
+    unitTests: ['src/server/register-tools-desktop-control.test.ts'],
+    smokeCommand: 'pnpm -F @proj-airi/computer-use-mcp smoke:macos-safe-loop-v3',
+  },
+  {
+    lane: 'desktop-native',
     id: 'task_memory_mvp',
     label: 'Task memory persistence across sessions',
     level: 'covered',

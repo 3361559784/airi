@@ -55,6 +55,34 @@ export interface RegisterComputerUseToolsOptions {
 
 const optionalTabIdSchema = z.number().int().min(0).optional().describe('Optional browser tab id override; defaults to the active tab')
 const optionalFrameIdsSchema = z.array(z.number().int().min(0)).min(1).optional().describe('Optional frame ids to target; omit to let the bridge inspect all frames')
+const desktopBoundsSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive(),
+  height: z.number().positive(),
+})
+const desktopSafeLoopStepSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('focus_window'),
+    windowId: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('move_resize_window'),
+    windowId: z.string().min(1),
+    bounds: desktopBoundsSchema,
+  }),
+  z.object({
+    kind: z.literal('click'),
+    x: z.number(),
+    y: z.number(),
+    button: z.enum(['left', 'right', 'middle']).optional(),
+    clickCount: z.number().int().min(1).max(2).optional(),
+  }),
+  z.object({
+    kind: z.literal('wait'),
+    durationMs: z.number().int().min(0).max(30_000),
+  }),
+])
 
 function toBrowserDomRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -1312,6 +1340,58 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
         structuredContent: {
           ...result,
           status: 'ok',
+          control: desktopControl.getControlState(),
+        },
+      }
+    },
+  )
+
+  server.tool(
+    'desktop_run_safe_agent_loop',
+    {
+      objective: z.string().min(1).describe('Short objective label for this safe loop run.'),
+      plan: z.array(desktopSafeLoopStepSchema).min(1).max(20).describe('Deterministic desktop step list executed with observe/decide/act/verify safeguards.'),
+      maxSteps: z.number().int().min(1).max(20).optional().describe('Optional max number of steps to execute from the provided plan (default: 6).'),
+      actionBudget: z.number().int().min(1).max(40).optional().describe('Optional action budget units for this run; loop stops when exhausted.'),
+      stopOnVerificationFailure: z.boolean().optional().describe('Whether verification failure should immediately fail the run (default: true).'),
+    },
+    async ({ objective, plan, maxSteps, actionBudget, stopOnVerificationFailure }) => {
+      const result = await desktopControl.runSafeAgentLoop({
+        objective,
+        plan,
+        maxSteps,
+        actionBudget,
+        stopOnVerificationFailure,
+      })
+
+      const failed = result.status !== 'completed'
+      const summary = `Desktop safe loop ${failed ? 'stopped' : 'completed'}: ${result.status}; executed ${result.executedSteps}/${result.plan.requestedSteps} step(s).`
+
+      return {
+        isError: failed,
+        content: [textContent(summary)],
+        structuredContent: {
+          ...result,
+          safeLoopStatus: result.status,
+          status: failed ? 'error' : 'ok',
+          control: desktopControl.getControlState(),
+        },
+      }
+    },
+  )
+
+  server.tool(
+    'desktop_get_safe_loop_trace',
+    {
+      limit: z.number().int().min(1).max(60).optional().describe('How many recent safe loop runs to return (default: 20).'),
+    },
+    async ({ limit }) => {
+      const runs = desktopControl.getSafeLoopTrace(limit)
+      return {
+        content: [textContent(`Safe loop runs returned: ${runs.length}`)],
+        structuredContent: {
+          status: 'ok',
+          runs,
           control: desktopControl.getControlState(),
         },
       }
