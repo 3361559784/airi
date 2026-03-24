@@ -84,6 +84,10 @@ async function captureOptionalScreenshot(params: {
   let captureAfter = params.config.defaultCaptureAfter
 
   switch (params.action.kind) {
+    case 'move_pointer':
+    case 'mouse_button':
+    case 'long_press':
+    case 'drag_pointer':
     case 'click':
     case 'type_text':
     case 'press_keys':
@@ -105,6 +109,14 @@ async function captureOptionalScreenshot(params: {
   return await params.executor.takeScreenshot({
     label: `${params.action.kind}-after`,
   })
+}
+
+function resolveTraceSteps(durationMs: number | undefined, fallback: number) {
+  if (!Number.isFinite(durationMs) || !durationMs || durationMs <= 0) {
+    return fallback
+  }
+
+  return Math.min(Math.max(Math.round(durationMs / 16), 6), 48)
 }
 
 function buildDeniedDecision(params: {
@@ -524,6 +536,81 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
             bounds: normalizedAction.input.bounds,
             appName: normalizedAction.input.appName,
             title: normalizedAction.input.title,
+          }
+          break
+        }
+        case 'move_pointer': {
+          const pointerTrace = buildPointerTrace({
+            from: runtime.session.getPointerPosition(),
+            to: { x: normalizedAction.input.x, y: normalizedAction.input.y },
+            bounds: runtime.config.allowedBounds,
+          })
+          const result = await runtime.executor.movePointer({
+            ...normalizedAction.input,
+            pointerTrace,
+          })
+          runtime.session.setPointerPosition({ x: normalizedAction.input.x, y: normalizedAction.input.y })
+          backendResult = {
+            ...result,
+            pointerTrace,
+          }
+          break
+        }
+        case 'mouse_button': {
+          const pointerTrace = buildPointerTrace({
+            from: runtime.session.getPointerPosition(),
+            to: { x: normalizedAction.input.x, y: normalizedAction.input.y },
+            bounds: runtime.config.allowedBounds,
+          })
+          const result = await runtime.executor.mouseButton({
+            ...normalizedAction.input,
+            pointerTrace,
+          })
+          runtime.session.setPointerPosition({ x: normalizedAction.input.x, y: normalizedAction.input.y })
+          backendResult = {
+            ...result,
+            pointerTrace,
+          }
+          break
+        }
+        case 'long_press': {
+          const pointerTrace = buildPointerTrace({
+            from: runtime.session.getPointerPosition(),
+            to: { x: normalizedAction.input.x, y: normalizedAction.input.y },
+            bounds: runtime.config.allowedBounds,
+          })
+          const result = await runtime.executor.longPress({
+            ...normalizedAction.input,
+            pointerTrace,
+          })
+          runtime.session.setPointerPosition({ x: normalizedAction.input.x, y: normalizedAction.input.y })
+          backendResult = {
+            ...result,
+            pointerTrace,
+          }
+          break
+        }
+        case 'drag_pointer': {
+          const approachTrace = buildPointerTrace({
+            from: runtime.session.getPointerPosition(),
+            to: { x: normalizedAction.input.startX, y: normalizedAction.input.startY },
+            bounds: runtime.config.allowedBounds,
+          })
+          const dragTrace = buildPointerTrace({
+            from: { x: normalizedAction.input.startX, y: normalizedAction.input.startY },
+            to: { x: normalizedAction.input.endX, y: normalizedAction.input.endY },
+            bounds: runtime.config.allowedBounds,
+            steps: resolveTraceSteps(normalizedAction.input.durationMs, 22),
+          })
+          const result = await runtime.executor.dragPointer({
+            ...normalizedAction.input,
+            approachTrace,
+            dragTrace,
+          })
+          runtime.session.setPointerPosition({ x: normalizedAction.input.endX, y: normalizedAction.input.endY })
+          backendResult = {
+            ...result,
+            pointerTrace: [...approachTrace, ...dragTrace],
           }
           break
         }

@@ -107,4 +107,118 @@ describe('createExecuteAction', () => {
       reason: expect.stringContaining('extension DOM stack is preferred'),
     }))
   })
+
+  it('routes drag_pointer through executor traces and updates the pointer position', async () => {
+    const stateManager = new RunStateManager()
+    const session = {
+      listPendingActions: vi.fn().mockReturnValue([]),
+      getBudgetState: vi.fn().mockReturnValue({
+        operationsExecuted: 0,
+        operationUnitsConsumed: 0,
+      }),
+      record: vi.fn().mockResolvedValue(undefined),
+      createPendingAction: vi.fn(),
+      consumeOperation: vi.fn(),
+      getLastScreenshot: vi.fn().mockReturnValue(undefined),
+      setLastScreenshot: vi.fn(),
+      getTerminalState: vi.fn().mockReturnValue(createTerminalState()),
+      setTerminalState: vi.fn(),
+      getPointerPosition: vi.fn().mockReturnValue({ x: 16, y: 24 }),
+      setPointerPosition: vi.fn(),
+    }
+    const executor = {
+      kind: 'dry-run' as const,
+      describe: () => ({ kind: 'dry-run' as const, notes: [] }),
+      getExecutionTarget: vi.fn().mockResolvedValue(createLocalExecutionTarget()),
+      getForegroundContext: vi.fn().mockResolvedValue({
+        available: true,
+        appName: 'Finder',
+        platform: 'darwin',
+      }),
+      getDisplayInfo: vi.fn().mockResolvedValue(createDisplayInfo({
+        platform: 'darwin',
+      })),
+      getPermissionInfo: vi.fn(),
+      observeWindows: vi.fn(),
+      takeScreenshot: vi.fn(),
+      openApp: vi.fn(),
+      focusApp: vi.fn(),
+      focusWindow: vi.fn(),
+      setWindowBounds: vi.fn(),
+      movePointer: vi.fn(),
+      mouseButton: vi.fn(),
+      longPress: vi.fn(),
+      dragPointer: vi.fn().mockResolvedValue({
+        performed: true,
+        backend: 'dry-run' as const,
+        notes: [],
+      }),
+      click: vi.fn(),
+      typeText: vi.fn(),
+      pressKeys: vi.fn(),
+      scroll: vi.fn(),
+      wait: vi.fn(),
+    }
+    const terminalRunner = {
+      describe: () => ({ kind: 'local-shell-runner' as const, notes: [] }),
+      execute: vi.fn(),
+      getState: vi.fn().mockReturnValue(createTerminalState()),
+      resetState: vi.fn(),
+    }
+    const browserDomBridge = {
+      getStatus: vi.fn().mockReturnValue({
+        enabled: false,
+        host: '127.0.0.1',
+        port: 8765,
+        connected: false,
+        pendingRequests: 0,
+      }),
+    }
+    const cdpBridgeManager = {
+      probeAvailability: vi.fn().mockResolvedValue({
+        endpoint: 'http://localhost:9222',
+        connected: false,
+        connectable: false,
+      }),
+    }
+
+    const runtime = {
+      config: createTestConfig({
+        executor: 'dry-run',
+        approvalMode: 'never',
+        defaultCaptureAfter: false,
+      }),
+      session,
+      executor,
+      terminalRunner,
+      browserDomBridge,
+      cdpBridgeManager,
+      stateManager,
+      taskMemory: {},
+    } as unknown as ComputerUseServerRuntime
+
+    const executeAction = createExecuteAction(runtime)
+    await executeAction({
+      kind: 'drag_pointer',
+      input: {
+        startX: 100,
+        startY: 120,
+        endX: 260,
+        endY: 300,
+        durationMs: 480,
+        captureAfter: false,
+      },
+    }, 'desktop_drag_pointer')
+
+    expect(executor.dragPointer).toHaveBeenCalledTimes(1)
+    expect(executor.dragPointer).toHaveBeenCalledWith(expect.objectContaining({
+      startX: 100,
+      startY: 120,
+      endX: 260,
+      endY: 300,
+      approachTrace: expect.any(Array),
+      dragTrace: expect.any(Array),
+    }))
+    expect(session.setPointerPosition).toHaveBeenCalledWith({ x: 260, y: 300 })
+  })
 })

@@ -3,8 +3,12 @@ import type {
   ClickActionInput,
   ComputerUseConfig,
   DesktopExecutor,
+  DragPointerActionInput,
   FocusWindowActionInput,
   ForegroundContext,
+  LongPressActionInput,
+  MouseButtonActionInput,
+  MovePointerActionInput,
   PointerTracePoint,
   PressKeysActionInput,
   ScrollActionInput,
@@ -100,6 +104,18 @@ export function createLinuxX11Executor(config: ComputerUseConfig, options: Linux
     },
     setWindowBounds: async (_input: SetWindowBoundsActionInput) => {
       throw new Error('linux-x11 executor does not implement set_window_bounds in this v1')
+    },
+    movePointer: async (_input: MovePointerActionInput & { pointerTrace: PointerTracePoint[] }) => {
+      throw new Error('linux-x11 executor does not implement move_pointer in this v1')
+    },
+    mouseButton: async (_input: MouseButtonActionInput & { pointerTrace: PointerTracePoint[] }) => {
+      throw new Error('linux-x11 executor does not implement mouse_button in this v1')
+    },
+    longPress: async (_input: LongPressActionInput & { pointerTrace: PointerTracePoint[] }) => {
+      throw new Error('linux-x11 executor does not implement long_press in this v1')
+    },
+    dragPointer: async (_input: DragPointerActionInput & { approachTrace: PointerTracePoint[], dragTrace: PointerTracePoint[] }) => {
+      throw new Error('linux-x11 executor does not implement drag_pointer in this v1')
     },
     click: async (input: ClickActionInput & { pointerTrace: PointerTracePoint[] }) => await client.click(input),
     typeText: async (input: TypeTextActionInput) => await client.typeText(input),

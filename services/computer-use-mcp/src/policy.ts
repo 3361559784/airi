@@ -36,38 +36,46 @@ function isMutatingAction(action: ActionInvocation) {
 }
 
 function isUiInteractionAction(action: ActionInvocation) {
-  return ['click', 'type_text', 'press_keys', 'scroll', 'open_app', 'focus_app', 'focus_window', 'set_window_bounds'].includes(action.kind)
+  return ['move_pointer', 'mouse_button', 'long_press', 'drag_pointer', 'click', 'type_text', 'press_keys', 'scroll', 'open_app', 'focus_app', 'focus_window', 'set_window_bounds'].includes(action.kind)
 }
 
-function getCoordinate(action: ActionInvocation) {
+function getCoordinates(action: ActionInvocation) {
   switch (action.kind) {
+    case 'move_pointer':
+    case 'mouse_button':
+    case 'long_press':
     case 'click':
-      return { x: action.input.x, y: action.input.y }
+      return [{ x: action.input.x, y: action.input.y }]
+    case 'drag_pointer':
+      return [
+        { x: action.input.startX, y: action.input.startY },
+        { x: action.input.endX, y: action.input.endY },
+      ]
     case 'type_text':
       if (typeof action.input.x === 'number' && typeof action.input.y === 'number') {
-        return { x: action.input.x, y: action.input.y }
+        return [{ x: action.input.x, y: action.input.y }]
       }
-      return undefined
+      return []
     case 'scroll':
       if (typeof action.input.x === 'number' && typeof action.input.y === 'number') {
-        return { x: action.input.x, y: action.input.y }
+        return [{ x: action.input.x, y: action.input.y }]
       }
-      return undefined
+      return []
     case 'focus_window':
       if (action.input.bounds) {
-        return {
+        return [{
           x: Math.round(action.input.bounds.x + action.input.bounds.width / 2),
           y: Math.round(action.input.bounds.y + action.input.bounds.height / 2),
-        }
+        }]
       }
-      return undefined
+      return []
     case 'set_window_bounds':
-      return {
+      return [{
         x: Math.round(action.input.bounds.x + action.input.bounds.width / 2),
         y: Math.round(action.input.bounds.y + action.input.bounds.height / 2),
-      }
+      }]
     default:
-      return undefined
+      return []
   }
 }
 
@@ -120,6 +128,14 @@ function estimateOperationUnits(action: ActionInvocation) {
       return 1
     case 'clipboard_write_text':
       return Math.max(2, Math.ceil(action.input.text.length / 64))
+    case 'move_pointer':
+      return 1
+    case 'mouse_button':
+      return 1
+    case 'long_press':
+      return 2
+    case 'drag_pointer':
+      return 3
     case 'click':
       return 1
     case 'type_text':
@@ -189,14 +205,15 @@ export function evaluateActionPolicy(params: {
     allowed = false
   }
 
-  const coordinate = getCoordinate(params.action)
-  if (coordinate && params.config.allowedBounds) {
-    const { x, y } = coordinate
+  const coordinates = getCoordinates(params.action)
+  if (coordinates.length > 0 && params.config.allowedBounds) {
     const { allowedBounds } = params.config
-    const withinBounds = x >= allowedBounds.x
+    const withinBounds = coordinates.every(({ x, y }) => (
+      x >= allowedBounds.x
       && y >= allowedBounds.y
       && x <= (allowedBounds.x + allowedBounds.width)
       && y <= (allowedBounds.y + allowedBounds.height)
+    ))
 
     if (!withinBounds) {
       reasons.push('requested coordinate is outside the allowed bounds')
@@ -268,7 +285,7 @@ export function evaluateActionPolicy(params: {
     riskLevel = 'high'
   }
 
-  if (params.action.kind === 'click' || params.action.kind === 'press_keys' || params.action.kind === 'scroll' || params.action.kind === 'focus_window' || params.action.kind === 'set_window_bounds') {
+  if (params.action.kind === 'move_pointer' || params.action.kind === 'mouse_button' || params.action.kind === 'long_press' || params.action.kind === 'drag_pointer' || params.action.kind === 'click' || params.action.kind === 'press_keys' || params.action.kind === 'scroll' || params.action.kind === 'focus_window' || params.action.kind === 'set_window_bounds') {
     riskLevel = 'medium'
   }
 

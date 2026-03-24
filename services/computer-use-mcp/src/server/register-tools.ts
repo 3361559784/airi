@@ -3,7 +3,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type {
   BrowserDomFrameResult,
   ClickActionInput,
+  DragPointerActionInput,
   FocusAppActionInput,
+  LongPressActionInput,
+  MouseButtonActionInput,
+  MovePointerActionInput,
   OpenAppActionInput,
   SecretReadEnvValueActionInput,
   TerminalExecActionInput,
@@ -255,10 +259,58 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
   )
 
   server.tool(
+    'desktop_move_pointer',
+    {
+      x: z.number().describe('Absolute screen X coordinate in global desktop space'),
+      y: z.number().describe('Absolute screen Y coordinate in global desktop space'),
+      captureAfter: z.boolean().optional().describe('Whether to return a fresh screenshot after the action'),
+    },
+    async (input: MovePointerActionInput) => executeAction({ kind: 'move_pointer', input }, 'desktop_move_pointer'),
+  )
+
+  server.tool(
+    'desktop_mouse_button',
+    {
+      x: z.number().describe('Absolute screen X coordinate in global desktop space'),
+      y: z.number().describe('Absolute screen Y coordinate in global desktop space'),
+      button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button, default left'),
+      state: z.enum(['down', 'up']).describe('Whether to press or release the mouse button'),
+      captureAfter: z.boolean().optional().describe('Whether to return a fresh screenshot after the action'),
+    },
+    async (input: MouseButtonActionInput) => executeAction({ kind: 'mouse_button', input }, 'desktop_mouse_button'),
+  )
+
+  server.tool(
+    'desktop_long_press',
+    {
+      x: z.number().describe('Absolute screen X coordinate in global desktop space'),
+      y: z.number().describe('Absolute screen Y coordinate in global desktop space'),
+      button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button, default left'),
+      durationMs: z.number().int().min(1).max(10_000).optional().describe('How long to hold before releasing; default 350ms'),
+      captureAfter: z.boolean().optional().describe('Whether to return a fresh screenshot after the action'),
+    },
+    async (input: LongPressActionInput) => executeAction({ kind: 'long_press', input }, 'desktop_long_press'),
+  )
+
+  server.tool(
+    'desktop_drag_pointer',
+    {
+      startX: z.number().describe('Drag start X coordinate in global desktop space'),
+      startY: z.number().describe('Drag start Y coordinate in global desktop space'),
+      endX: z.number().describe('Drag end X coordinate in global desktop space'),
+      endY: z.number().describe('Drag end Y coordinate in global desktop space'),
+      button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button to hold during drag; default left'),
+      durationMs: z.number().int().min(1).max(10_000).optional().describe('Optional target drag duration used to shape the drag trace'),
+      captureAfter: z.boolean().optional().describe('Whether to return a fresh screenshot after the action'),
+    },
+    async (input: DragPointerActionInput) => executeAction({ kind: 'drag_pointer', input }, 'desktop_drag_pointer'),
+  )
+
+  server.tool(
     'desktop_click',
     {
-      x: z.number().describe('Absolute screen X coordinate in pixels'),
-      y: z.number().describe('Absolute screen Y coordinate in pixels'),
+      x: z.number().describe('Absolute screen X coordinate in global desktop space'),
+      y: z.number().describe('Absolute screen Y coordinate in global desktop space'),
       button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button, default left'),
       clickCount: z.number().int().min(1).max(2).optional().describe('Number of clicks, default 1'),
       captureAfter: z.boolean().optional().describe('Whether to return a fresh screenshot after the action'),

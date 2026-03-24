@@ -81,6 +81,14 @@ export function explainActionIntent(action: ActionInvocation, runState: RunState
       return `Reading the system clipboard so the task can reuse a copied value across apps${taskContext}.`
     case 'clipboard_write_text':
       return `Writing text into the system clipboard so it can be pasted into another app${taskContext}.`
+    case 'move_pointer':
+      return `Moving the pointer to (${action.input.x}, ${action.input.y})${taskContext}.`
+    case 'mouse_button':
+      return `${action.input.state === 'down' ? 'Pressing' : 'Releasing'} the ${action.input.button || 'left'} mouse button at (${action.input.x}, ${action.input.y})${taskContext}.`
+    case 'long_press':
+      return `Long-pressing at (${action.input.x}, ${action.input.y}) for ${action.input.durationMs ?? 350}ms${taskContext}.`
+    case 'drag_pointer':
+      return `Dragging from (${action.input.startX}, ${action.input.startY}) to (${action.input.endX}, ${action.input.endY})${taskContext}.`
     case 'click':
       return `Clicking at (${action.input.x}, ${action.input.y}) to interact with the UI element at that position${taskContext}.`
     case 'type_text':
@@ -128,6 +136,9 @@ export function explainApprovalReason(
   }
   else if (action.kind === 'focus_window' || action.kind === 'set_window_bounds') {
     parts.push('because semantic window-level desktop mutations can affect active task context')
+  }
+  else if (action.kind === 'move_pointer' || action.kind === 'mouse_button' || action.kind === 'long_press' || action.kind === 'drag_pointer') {
+    parts.push('because low-level pointer control can directly manipulate the active desktop')
   }
   else if (action.kind === 'type_text' && action.input.text.length > 160) {
     parts.push(`because a large text payload (${action.input.text.length} chars) is being typed`)
@@ -220,6 +231,14 @@ export function explainActionOutcome(params: {
       return 'Clipboard text retrieved successfully.'
     case 'clipboard_write_text':
       return `Clipboard updated successfully (${action.input.text.length} characters).`
+    case 'move_pointer':
+      return `Pointer moved to (${action.input.x}, ${action.input.y}).`
+    case 'mouse_button':
+      return `${action.input.button || 'left'} mouse button ${action.input.state} at (${action.input.x}, ${action.input.y}).`
+    case 'long_press':
+      return `Long press completed at (${action.input.x}, ${action.input.y}) for ${action.input.durationMs ?? 350}ms.`
+    case 'drag_pointer':
+      return `Dragged from (${action.input.startX}, ${action.input.startY}) to (${action.input.endX}, ${action.input.endY}).`
     case 'click':
       return `Clicked at (${action.input.x}, ${action.input.y}).${context.appName ? ` Target app: "${context.appName}".` : ''}`
     case 'type_text':
@@ -268,6 +287,10 @@ function buildFailureExplanation(
       parts.push('Ensure the file path and workspace boundaries are perfectly aligned and readable.')
       break
     case 'click':
+    case 'move_pointer':
+    case 'mouse_button':
+    case 'long_press':
+    case 'drag_pointer':
     case 'type_text':
     case 'press_keys':
     case 'scroll':

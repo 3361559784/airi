@@ -17,6 +17,10 @@ export type ActionKind
     | 'secret_read_env_value'
     | 'clipboard_read_text'
     | 'clipboard_write_text'
+    | 'move_pointer'
+    | 'mouse_button'
+    | 'long_press'
+    | 'drag_pointer'
     | 'click'
     | 'type_text'
     | 'press_keys'
@@ -187,6 +191,38 @@ export interface ClickActionInput {
   y: number
   button?: MouseButton
   clickCount?: number
+  captureAfter?: boolean
+}
+
+export interface MovePointerActionInput {
+  x: number
+  y: number
+  captureAfter?: boolean
+}
+
+export interface MouseButtonActionInput {
+  x: number
+  y: number
+  button?: MouseButton
+  state: 'down' | 'up'
+  captureAfter?: boolean
+}
+
+export interface LongPressActionInput {
+  x: number
+  y: number
+  button?: MouseButton
+  durationMs?: number
+  captureAfter?: boolean
+}
+
+export interface DragPointerActionInput {
+  startX: number
+  startY: number
+  endX: number
+  endY: number
+  button?: MouseButton
+  durationMs?: number
   captureAfter?: boolean
 }
 
@@ -429,6 +465,10 @@ export type ActionInvocation
     | { kind: 'secret_read_env_value', input: SecretReadEnvValueActionInput }
     | { kind: 'clipboard_read_text', input: ClipboardReadTextActionInput }
     | { kind: 'clipboard_write_text', input: ClipboardWriteTextActionInput }
+    | { kind: 'move_pointer', input: MovePointerActionInput }
+    | { kind: 'mouse_button', input: MouseButtonActionInput }
+    | { kind: 'long_press', input: LongPressActionInput }
+    | { kind: 'drag_pointer', input: DragPointerActionInput }
     | { kind: 'click', input: ClickActionInput }
     | { kind: 'type_text', input: TypeTextActionInput }
     | { kind: 'press_keys', input: PressKeysActionInput }
@@ -706,6 +746,10 @@ export interface DesktopExecutor {
   focusApp: (input: FocusAppActionInput) => Promise<ExecutorActionResult>
   focusWindow: (input: FocusWindowActionInput) => Promise<ExecutorActionResult>
   setWindowBounds: (input: SetWindowBoundsActionInput) => Promise<ExecutorActionResult>
+  movePointer: (input: MovePointerActionInput & { pointerTrace: PointerTracePoint[] }) => Promise<ExecutorActionResult>
+  mouseButton: (input: MouseButtonActionInput & { pointerTrace: PointerTracePoint[] }) => Promise<ExecutorActionResult>
+  longPress: (input: LongPressActionInput & { pointerTrace: PointerTracePoint[] }) => Promise<ExecutorActionResult>
+  dragPointer: (input: DragPointerActionInput & { approachTrace: PointerTracePoint[], dragTrace: PointerTracePoint[] }) => Promise<ExecutorActionResult>
   click: (input: ClickActionInput & { pointerTrace: PointerTracePoint[] }) => Promise<ExecutorActionResult>
   typeText: (input: TypeTextActionInput) => Promise<ExecutorActionResult>
   pressKeys: (input: PressKeysActionInput) => Promise<ExecutorActionResult>

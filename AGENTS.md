@@ -94,6 +94,15 @@ Concise but detailed reference for contributors working across the `moeru-ai/air
 - If the refactor scope is small, do a progressive refactor step by step.
 - When modifying code, always check for opportunities to do small, minimal progressive refactors alongside the change.
 
+## Computer Use macOS Delivery
+
+- Treat `services/computer-use-mcp` macOS desktop work as layered delivery tracks, not one cumulative "desktop mode" story.
+- `v1` is the minimal macOS desktop control skeleton. Keep it inside `services/computer-use-mcp` and limit it to pointer/control primitives, lease or interrupt boundaries, dry-run support, `macos-local`, and safe Retina coordinate alignment. Do not mix in AIRI routing, renderer UI, ghost pointer visuals, browser-specific abstractions, or high-level planning.
+- `v2` is macOS control quality and OS integration. Limit it to permission probes, display and coordinate correctness, app or window focus, richer gesture semantics, retries, recovery, and other macOS-specific reliability work. Do not turn `v2` into an agent loop.
+- `v3` is the safe desktop agent loop. Put step-by-step observe, decide, act, verify control, approval and risk policy, action budgets, takeover or interrupt behavior, and audit trail work here. Do not hide this work inside `v2`.
+- If browser automation becomes necessary, build a separate browser lane or adapter. Do not fold browser semantics into the macOS substrate branch by default.
+- Do not package `v1`, `v2`, and `v3` into one PR. Keep each review scoped to one layer.
+
 ## Styling & Components
 
 - Prefer Vue v-bind class arrays for readability when working with UnoCSS & tailwindcss: do `:class="['px-2 py-1','flex items-center','bg-white/50 dark:bg-black/50']"`, don't do `class="px-2 py-1 flex items-center bg-white/50 dark:bg-black/50"`, don't do `px="2" py="1" flex="~ items-center" bg="white/50 dark:black/50"`; avoid long inline `class=""`. Refactor legacy when you touch it.

@@ -212,7 +212,7 @@ export function evaluateStrategy(params: {
   // Rule 2: For UI-interaction actions, make sure the correct app is
   // focused before sending clicks / keystrokes / text.
   // -----------------------------------------------------------------------
-  const uiActions = new Set<string>(['click', 'type_text', 'press_keys', 'scroll'])
+  const uiActions = new Set<string>(['move_pointer', 'mouse_button', 'long_press', 'drag_pointer', 'click', 'type_text', 'press_keys', 'scroll'])
   if (uiActions.has(proposedAction.kind) && ctx?.available) {
     // If there is an active task whose current step targets a specific app,
     // verify the foreground matches.
@@ -362,7 +362,12 @@ export function evaluateStrategy(params: {
   // unknown and the action involves spatial coordinates, enumerate first.
   // -----------------------------------------------------------------------
   if (
-    (proposedAction.kind === 'screenshot' || proposedAction.kind === 'click')
+    (proposedAction.kind === 'screenshot'
+      || proposedAction.kind === 'move_pointer'
+      || proposedAction.kind === 'mouse_button'
+      || proposedAction.kind === 'long_press'
+      || proposedAction.kind === 'drag_pointer'
+      || proposedAction.kind === 'click')
     && !state.displayInfo
   ) {
     advisories.push(advisory({
@@ -486,7 +491,7 @@ export function buildRecoveryPlan(params: {
 // ---------------------------------------------------------------------------
 
 function isMutatingUiAction(action: ActionInvocation): boolean {
-  return ['click', 'type_text', 'press_keys', 'scroll', 'open_app', 'focus_app'].includes(action.kind)
+  return ['move_pointer', 'mouse_button', 'long_press', 'drag_pointer', 'click', 'type_text', 'press_keys', 'scroll', 'open_app', 'focus_app'].includes(action.kind)
 }
 
 function isAppFocused(ctx: ForegroundContext, targetApp: string): boolean {

@@ -9,7 +9,7 @@ import { runProcess, sanitizeFileSegment } from './process'
 
 const placeholderPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9pP8WwAAAABJRU5ErkJggg=='
 
-function readPngDimensions(buffer: Buffer) {
+export function readPngDimensions(buffer: Buffer) {
   if (buffer.length < 24)
     return {}
 
@@ -103,6 +103,7 @@ export async function captureScreenshotArtifact(params: {
   screenshotBinary: string
   timeoutMs: number
   executionTarget?: ExecutionTarget
+  postProcessFile?: (outputPath: string) => Promise<{ note?: string } | void>
 }): Promise<ScreenshotArtifact> {
   const fileName = `${Date.now()}-${sanitizeFileSegment(params.label, 'desktop')}.png`
   const outputPath = join(params.screenshotsDir, fileName)
@@ -116,11 +117,16 @@ export async function captureScreenshotArtifact(params: {
       timeoutMs: params.timeoutMs,
     })
 
+    const postProcessResult = params.postProcessFile
+      ? await params.postProcessFile(outputPath)
+      : undefined
+    const postProcess = postProcessResult || undefined
     const buffer = await readFile(outputPath)
     return buildScreenshotArtifact({
       outputPath,
       buffer,
       capturedAt: new Date().toISOString(),
+      note: postProcess?.note,
       executionTarget: params.executionTarget,
     })
   }

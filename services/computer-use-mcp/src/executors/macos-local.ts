@@ -2,11 +2,15 @@ import type {
   ClickActionInput,
   ComputerUseConfig,
   DesktopExecutor,
+  DragPointerActionInput,
   ExecutionTarget,
   ExecutorActionResult,
   FocusAppActionInput,
   FocusWindowActionInput,
   ForegroundContext,
+  LongPressActionInput,
+  MouseButtonActionInput,
+  MovePointerActionInput,
   ObserveWindowsRequest,
   OpenAppActionInput,
   PointerTracePoint,
@@ -19,14 +23,16 @@ import type {
 } from '../types'
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { env, platform } from 'node:process'
 
 import { appNamesMatch, getKnownAppLaunchNames } from '../app-aliases'
-import { probeDisplayInfo, probePermissionInfo } from '../runtime-probes'
+import { getMacOSDisplayInfo, resolveRetinaScreenshotNormalization } from '../display/runtime'
+import { probePermissionInfo } from '../runtime-probes'
 import { runProcess } from '../utils/process'
-import { captureScreenshotArtifact } from '../utils/screenshot'
+import { captureScreenshotArtifact, readPngDimensions } from '../utils/screenshot'
 import { runSwiftScript } from '../utils/swift'
 
 const buttonNames = {
@@ -141,7 +147,7 @@ async function runMacOsJsonScript<T>(config: ComputerUseConfig, source: string, 
   return JSON.parse(stdout.trim()) as T
 }
 
-function moveAndClickScript() {
+function pointerScriptPrelude() {
   return String.raw`
 import CoreGraphics
 import Foundation
@@ -170,27 +176,74 @@ func mouseUpType(_ button: CGMouseButton) -> CGEventType {
   }
 }
 
+func mouseDragType(_ button: CGMouseButton) -> CGEventType {
+  switch button {
+  case .right: return .rightMouseDragged
+  case .center: return .otherMouseDragged
+  default: return .leftMouseDragged
+  }
+}
+
+func postTrace(_ trace: [[String: Any]], mouseType: CGEventType, mouseButton: CGMouseButton = .left) {
+  for point in trace {
+    let x = point["x"] as? Double ?? 0
+    let y = point["y"] as? Double ?? 0
+    let delayMs = point["delayMs"] as? Int ?? 0
+    let location = CGPoint(x: x, y: y)
+    if let event = CGEvent(mouseEventSource: nil, mouseType: mouseType, mouseCursorPosition: location, mouseButton: mouseButton) {
+      event.post(tap: .cghidEventTap)
+    }
+    if delayMs > 0 {
+      usleep(useconds_t(delayMs * 1000))
+    }
+  }
+}
+
 let environment = ProcessInfo.processInfo.environment
 let rawInput = environment["COMPUTER_USE_SWIFT_STDIN"] ?? "{}"
 let inputData = rawInput.data(using: .utf8) ?? Data()
 let input = (try? JSONSerialization.jsonObject(with: inputData)) as? [String: Any] ?? [:]
-let trace = input["pointerTrace"] as? [[String: Any]] ?? []
 let buttonRaw = input["button"] as? Int ?? 0
-let clickCount = input["clickCount"] as? Int ?? 1
 let button = mouseButton(buttonRaw)
-
-for point in trace {
-  let x = point["x"] as? Double ?? 0
-  let y = point["y"] as? Double ?? 0
-  let delayMs = point["delayMs"] as? Int ?? 0
-  let location = CGPoint(x: x, y: y)
-  if let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: location, mouseButton: .left) {
-    moveEvent.post(tap: .cghidEventTap)
-  }
-  if delayMs > 0 {
-    usleep(useconds_t(delayMs * 1000))
-  }
+`
 }
+
+function movePointerScript() {
+  return `${pointerScriptPrelude()}
+let trace = input["pointerTrace"] as? [[String: Any]] ?? []
+postTrace(trace, mouseType: .mouseMoved)
+
+print("{}")
+`
+}
+
+function mouseButtonScript() {
+  return `${pointerScriptPrelude()}
+let trace = input["pointerTrace"] as? [[String: Any]] ?? []
+let state = ((input["state"] as? String) ?? "down").lowercased()
+
+postTrace(trace, mouseType: .mouseMoved)
+
+let lastPoint = trace.last
+let x = lastPoint?["x"] as? Double ?? 0
+let y = lastPoint?["y"] as? Double ?? 0
+let location = CGPoint(x: x, y: y)
+let mouseType = state == "up" ? mouseUpType(button) : mouseDownType(button)
+
+if let event = CGEvent(mouseEventSource: nil, mouseType: mouseType, mouseCursorPosition: location, mouseButton: button) {
+  event.post(tap: .cghidEventTap)
+}
+
+print("{}")
+`
+}
+
+function moveAndClickScript() {
+  return `${pointerScriptPrelude()}
+let trace = input["pointerTrace"] as? [[String: Any]] ?? []
+let clickCount = input["clickCount"] as? Int ?? 1
+
+postTrace(trace, mouseType: .mouseMoved)
 
 let lastPoint = trace.last
 let x = lastPoint?["x"] as? Double ?? 0
@@ -205,6 +258,59 @@ for _ in 0..<max(clickCount, 1) {
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
   }
+}
+
+print("{}")
+`
+}
+
+function longPressScript() {
+  return `${pointerScriptPrelude()}
+let trace = input["pointerTrace"] as? [[String: Any]] ?? []
+let durationMs = max(input["durationMs"] as? Int ?? 350, 0)
+
+postTrace(trace, mouseType: .mouseMoved)
+
+let lastPoint = trace.last
+let x = lastPoint?["x"] as? Double ?? 0
+let y = lastPoint?["y"] as? Double ?? 0
+let location = CGPoint(x: x, y: y)
+
+if let down = CGEvent(mouseEventSource: nil, mouseType: mouseDownType(button), mouseCursorPosition: location, mouseButton: button),
+   let up = CGEvent(mouseEventSource: nil, mouseType: mouseUpType(button), mouseCursorPosition: location, mouseButton: button) {
+  down.post(tap: .cghidEventTap)
+  if durationMs > 0 {
+    usleep(useconds_t(durationMs * 1000))
+  }
+  up.post(tap: .cghidEventTap)
+}
+
+print("{}")
+`
+}
+
+function dragPointerScript() {
+  return `${pointerScriptPrelude()}
+let approachTrace = input["approachTrace"] as? [[String: Any]] ?? []
+let dragTrace = input["dragTrace"] as? [[String: Any]] ?? []
+let startX = input["startX"] as? Double ?? (approachTrace.last?["x"] as? Double ?? dragTrace.first?["x"] as? Double ?? 0)
+let startY = input["startY"] as? Double ?? (approachTrace.last?["y"] as? Double ?? dragTrace.first?["y"] as? Double ?? 0)
+let endX = input["endX"] as? Double ?? (dragTrace.last?["x"] as? Double ?? startX)
+let endY = input["endY"] as? Double ?? (dragTrace.last?["y"] as? Double ?? startY)
+
+postTrace(approachTrace, mouseType: .mouseMoved)
+
+let startLocation = CGPoint(x: startX, y: startY)
+let endLocation = CGPoint(x: endX, y: endY)
+
+if let down = CGEvent(mouseEventSource: nil, mouseType: mouseDownType(button), mouseCursorPosition: startLocation, mouseButton: button) {
+  down.post(tap: .cghidEventTap)
+}
+
+postTrace(dragTrace, mouseType: mouseDragType(button), mouseButton: button)
+
+if let up = CGEvent(mouseEventSource: nil, mouseType: mouseUpType(button), mouseCursorPosition: endLocation, mouseButton: button) {
+  up.post(tap: .cghidEventTap)
 }
 
 print("{}")
@@ -313,6 +419,95 @@ if let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelC
 
 print("{}")
 `
+}
+
+function resizeScreenshotScript() {
+  return String.raw`
+import AppKit
+import Foundation
+
+let environment = ProcessInfo.processInfo.environment
+let rawInput = environment["COMPUTER_USE_SWIFT_STDIN"] ?? "{}"
+let inputData = rawInput.data(using: .utf8) ?? Data()
+let input = (try? JSONSerialization.jsonObject(with: inputData)) as? [String: Any] ?? [:]
+let path = input["path"] as? String ?? ""
+let width = max((input["width"] as? Int) ?? 0, 1)
+let height = max((input["height"] as? Int) ?? 0, 1)
+
+guard !path.isEmpty else {
+  print("{\"resized\":false,\"reason\":\"missing_path\"}")
+  exit(0)
+}
+
+guard let image = NSImage(contentsOfFile: path) else {
+  print("{\"resized\":false,\"reason\":\"image_load_failed\"}")
+  exit(0)
+}
+
+let targetSize = NSSize(width: width, height: height)
+guard let rep = NSBitmapImageRep(
+  bitmapDataPlanes: nil,
+  pixelsWide: width,
+  pixelsHigh: height,
+  bitsPerSample: 8,
+  samplesPerPixel: 4,
+  hasAlpha: true,
+  isPlanar: false,
+  colorSpaceName: .deviceRGB,
+  bytesPerRow: 0,
+  bitsPerPixel: 0
+) else {
+  print("{\"resized\":false,\"reason\":\"bitmap_alloc_failed\"}")
+  exit(0)
+}
+
+rep.size = targetSize
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+NSColor.clear.set()
+NSBezierPath(rect: NSRect(origin: .zero, size: targetSize)).fill()
+image.draw(
+  in: NSRect(origin: .zero, size: targetSize),
+  from: NSRect(origin: .zero, size: image.size),
+  operation: .copy,
+  fraction: 1.0
+)
+NSGraphicsContext.restoreGraphicsState()
+
+guard let png = rep.representation(using: .png, properties: [:]) else {
+  print("{\"resized\":false,\"reason\":\"png_encode_failed\"}")
+  exit(0)
+}
+
+do {
+  try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+  print("{\"resized\":true}")
+}
+catch {
+  let escaped = String(describing: error).replacingOccurrences(of: "\"", with: "\\\"")
+  print("{\"resized\":false,\"reason\":\"\(escaped)\"}")
+}
+`
+}
+
+async function normalizeRetinaScreenshotFile(config: ComputerUseConfig, outputPath: string) {
+  const displayInfo = await getMacOSDisplayInfo(config)
+  const buffer = await readFile(outputPath)
+  const dimensions = readPngDimensions(buffer)
+  const plan = resolveRetinaScreenshotNormalization(displayInfo, dimensions)
+  if (!plan) {
+    return undefined
+  }
+
+  await runMacOsJsonScript<{ resized: boolean, reason?: string }>(config, resizeScreenshotScript(), {
+    path: outputPath,
+    width: plan.width,
+    height: plan.height,
+  })
+
+  return {
+    note: plan.note,
+  }
 }
 
 function semanticFocusWindowScript() {
@@ -923,7 +1118,7 @@ export function createMacOSLocalExecutor(config: ComputerUseConfig): DesktopExec
         return fallbackContext(error instanceof Error ? error.message : String(error))
       }
     },
-    getDisplayInfo: () => probeDisplayInfo(config),
+    getDisplayInfo: async () => await getMacOSDisplayInfo(config),
     getPermissionInfo: () => probePermissionInfo(config),
     observeWindows: async (request) => {
       await ensureMacOS()
@@ -935,6 +1130,7 @@ export function createMacOSLocalExecutor(config: ComputerUseConfig): DesktopExec
       screenshotBinary: config.binaries.screencapture,
       timeoutMs: config.timeoutMs,
       executionTarget,
+      postProcessFile: async outputPath => await normalizeRetinaScreenshotFile(config, outputPath),
     }),
     openApp: async (input: OpenAppActionInput) => {
       await ensureMacOS()
@@ -1026,6 +1222,56 @@ export function createMacOSLocalExecutor(config: ComputerUseConfig): DesktopExec
       }
 
       throw new Error(`set_window_bounds failed: ${semanticResult.reason}`)
+    },
+    movePointer: async (input: MovePointerActionInput & { pointerTrace: PointerTracePoint[] }) => {
+      await ensureMacOS()
+      await runMacOsJsonScript<Record<string, never>>(config, movePointerScript(), {
+        pointerTrace: input.pointerTrace,
+      })
+      return {
+        ...result([`moved pointer to (${input.x}, ${input.y})`], executionTarget),
+        pointerTrace: input.pointerTrace,
+      }
+    },
+    mouseButton: async (input: MouseButtonActionInput & { pointerTrace: PointerTracePoint[] }) => {
+      await ensureMacOS()
+      await runMacOsJsonScript<Record<string, never>>(config, mouseButtonScript(), {
+        pointerTrace: input.pointerTrace,
+        button: buttonNames[input.button || 'left'],
+        state: input.state,
+      })
+      return {
+        ...result([`mouse button ${input.state} at (${input.x}, ${input.y})`], executionTarget),
+        pointerTrace: input.pointerTrace,
+      }
+    },
+    longPress: async (input: LongPressActionInput & { pointerTrace: PointerTracePoint[] }) => {
+      await ensureMacOS()
+      await runMacOsJsonScript<Record<string, never>>(config, longPressScript(), {
+        pointerTrace: input.pointerTrace,
+        button: buttonNames[input.button || 'left'],
+        durationMs: input.durationMs ?? 350,
+      })
+      return {
+        ...result([`long pressed at (${input.x}, ${input.y}) for ${input.durationMs ?? 350}ms`], executionTarget),
+        pointerTrace: input.pointerTrace,
+      }
+    },
+    dragPointer: async (input: DragPointerActionInput & { approachTrace: PointerTracePoint[], dragTrace: PointerTracePoint[] }) => {
+      await ensureMacOS()
+      await runMacOsJsonScript<Record<string, never>>(config, dragPointerScript(), {
+        approachTrace: input.approachTrace,
+        dragTrace: input.dragTrace,
+        startX: input.startX,
+        startY: input.startY,
+        endX: input.endX,
+        endY: input.endY,
+        button: buttonNames[input.button || 'left'],
+      })
+      return {
+        ...result([`dragged pointer from (${input.startX}, ${input.startY}) to (${input.endX}, ${input.endY})`], executionTarget),
+        pointerTrace: [...input.approachTrace, ...input.dragTrace],
+      }
     },
     click: async (input: ClickActionInput & { pointerTrace: PointerTracePoint[] }) => {
       await ensureMacOS()

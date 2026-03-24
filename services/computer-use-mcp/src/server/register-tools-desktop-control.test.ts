@@ -247,6 +247,36 @@ describe('registerComputerUseTools: desktop control tools', () => {
     })).rejects.toThrow(/Missing registered tool/)
   })
 
+  it('registers pointer primitive tools on the public MCP surface', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_move_pointer', { x: 120, y: 160 })
+    await invoke('desktop_mouse_button', { x: 120, y: 160, state: 'down' })
+    await invoke('desktop_long_press', { x: 180, y: 210, durationMs: 500 })
+    await invoke('desktop_drag_pointer', {
+      startX: 180,
+      startY: 210,
+      endX: 360,
+      endY: 260,
+      durationMs: 420,
+    })
+
+    expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual([
+      'move_pointer',
+      'mouse_button',
+      'long_press',
+      'drag_pointer',
+    ])
+  })
+
   it('returns isError=true when desktop_focus_window fails', async () => {
     const executeAction = vi.fn(async (action: ActionInvocation) => {
       if (action.kind === 'focus_window') {
