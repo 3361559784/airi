@@ -10,6 +10,69 @@ Scope: `services/computer-use-mcp/**`
 - `computer-use-mcp` owns execution primitives, workflow orchestration, terminal/browser/desktop surfaces, trace, audit, and safety checks.
 - Treat terminal, browser, editor, and desktop operations as one task system. Do not split them into disconnected demos.
 
+## Reuse Existing UX / Retry / Error Patterns First
+
+This is a hard handoff rule, not a style suggestion.
+
+The [`#1307` review thread](https://github.com/moeru-ai/airi/pull/1307) already hit a real failure mode here: adapter/system work started re-implementing approval popups, error presentation, and helper utilities that the repo already had elsewhere. Do not repeat that.
+
+Before adding any new retry flow, error popup, approval prompt, or helper utility, inspect and prefer the existing repo primitives first:
+
+- Approval / notice UI:
+  - Prefer the Electron `notice` window path in `apps/stage-tamagotchi/src/main/windows/notice/` when you need a shell-owned confirm/notice flow.
+  - Prefer the shared renderer toaster path in `packages/stage-ui/src/components/scenarios/toasters/` and the existing `vue-sonner` wiring in the app shell when you need in-app error or status notifications.
+  - Do **not** default to raw `dialog.showMessageBox` for AIRI / computer-use approval or error UX. This was explicitly called out in review on `apps/stage-tamagotchi/src/main/services/airi/desktop-approval/index.ts` (`discussion_r2925844545`).
+- Retry / recovery behavior:
+  - Before inventing ad-hoc "try again" loops, read and extend `src/strategy.ts`, `src/transparency.ts`, and `src/workflows/engine.ts`.
+  - The service already has advisory kinds, retryability, reroute behavior, and human-readable recovery messaging. Extend that layer instead of creating a parallel retry system inside an adapter.
+- Errors / logging / utility helpers:
+  - Prefer `errorMessageFrom` from `@moeru/std` for error formatting.
+  - Prefer `@guiiai/logg` for logging.
+  - Prefer `es-toolkit` for common utility helpers before writing another local helper.
+- PR shape / architecture:
+  - Keep skeleton/orchestration changes separate from per-adapter additions.
+  - Do not mix provider/proxy leftovers, shell UX experiments, and adapter/system work into the same PR just because they are all "computer use related".
+
+## Test Reality First, Do Not Test for the Test
+
+This is another hard handoff rule.
+
+Do not "make tests pass" by locking the implementation to a narrow canned scene and then writing assertions that only prove that canned scene. That is fake confidence. `computer-use-mcp` fails in dirty real environments, not in perfectly staged screenshots.
+
+The anti-pattern is:
+
+- fix the scene in advance
+- tailor the runtime to that scene
+- write a unit/smoke/E2E that only confirms the tailored path
+- then call the feature "validated" while it still explodes in real use
+
+For this repo, the correct testing posture is:
+
+- unit tests prove contract and classification semantics
+  - status, failure classification, interruption, reroute, verification outcome, trace shape
+- smoke tests prove the lane still works end-to-end under a minimal but real workflow
+- E2E tests should prefer realistic, dirty conditions over overly curated demo flows
+
+When adding tests for terminal / browser / desktop / coding work, explicitly ask:
+
+- does this test still pass only because the environment is pre-arranged for success?
+- does it cover the kinds of failure that happen in actual runs: lease loss, user preemption, stale foreground app, window mismatch, ambiguous target, missing browser surface, bad terminal output, reroute-required state?
+- would this still tell us something useful if the UI/app/window state is not exactly the one we expected?
+
+Do:
+
+- test invariant contracts and failure semantics
+- add cases for messy or adversarial state transitions
+- keep at least one realistic smoke/E2E path that can fail for the same reasons production usage fails
+- treat E2E breakage as product signal, not just flaky test noise
+
+Do not:
+
+- overfit implementation to a frozen fixture scene
+- add fake verification just because a test expects "green"
+- claim coverage because a deterministic happy-path demo passed once
+- replace real failure coverage with screenshot-goldens or hand-wired mocks only
+
 ## Current Status Snapshot
 
 Updated for the current terminal-lane-v2 workstream.
