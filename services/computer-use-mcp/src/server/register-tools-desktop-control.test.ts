@@ -665,14 +665,28 @@ describe('registerComputerUseTools: desktop control tools', () => {
     })
 
     const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      observedAppIdentity: {
+        appName: 'Cursor',
+        ownerPid: 9001,
+        windowCount: 1,
+      },
+      appReacquireSelector: {
+        appName: 'Cursor',
+        ownerPid: 9001,
+      },
+      appReacquireStatus: 'matched_by_owner_pid',
+    })
     expect(stepResults[0]?.verificationDetails).toMatchObject({
       attempts: 2,
       firstAttempt: {
         expectedApp: 'Cursor',
+        appReacquireStatus: 'matched_by_owner_pid',
         observedFocusedApp: 'Terminal',
       },
       secondAttempt: {
         expectedApp: 'Cursor',
+        appReacquireStatus: 'matched_by_owner_pid',
         observedFocusedApp: 'Cursor',
       },
     })
@@ -786,11 +800,21 @@ describe('registerComputerUseTools: desktop control tools', () => {
     })
 
     const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      appReacquireSelector: {
+        appName: 'Discord',
+      },
+      appReacquireStatus: 'not_found',
+    })
     expect(stepResults[0]?.verificationDetails).toMatchObject({
       expectedApp: 'Discord',
       attempts: 2,
       matchedBy: 'visible_window',
       windowCountForApp: 1,
+      secondAttempt: {
+        appReacquireStatus: 'matched_by_app_name',
+        matchedOwnerPid: 9012,
+      },
     })
     expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['open_app', 'wait'])
   })
@@ -832,11 +856,22 @@ describe('registerComputerUseTools: desktop control tools', () => {
     })
 
     const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      observedAppIdentity: {
+        appName: 'Cursor',
+        windowCount: 1,
+      },
+      appReacquireSelector: {
+        appName: 'Cursor',
+      },
+      appReacquireStatus: 'matched_by_app_name',
+    })
     expect(stepResults[0]?.verificationDetails).toMatchObject({
       expectedApp: 'Cursor',
       attempts: 1,
       matchedBy: 'focused_app',
       windowCountForApp: 1,
+      appReacquireStatus: 'matched_by_app_name',
     })
     expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['open_app'])
   })
@@ -951,6 +986,12 @@ describe('registerComputerUseTools: desktop control tools', () => {
     })
 
     const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      appReacquireSelector: {
+        appName: 'Discord',
+      },
+      appReacquireStatus: 'not_found',
+    })
     expect(stepResults[0]?.verificationDetails).toMatchObject({
       expectedApp: 'Discord',
       attempts: 3,

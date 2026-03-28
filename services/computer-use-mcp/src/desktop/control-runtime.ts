@@ -1,6 +1,9 @@
 import type { ExecuteAction } from '../server/action-executor'
 import type { ComputerUseServerRuntime } from '../server/runtime'
 import type {
+  DesktopAppReacquireSelector,
+  DesktopAppReacquireStatus,
+  DesktopObservedAppIdentity,
   ControlLeaseKind,
   DesktopActionPlan,
   DesktopActionPlanStep,
@@ -22,7 +25,10 @@ import { GhostPointerService } from './ghost-pointer-service'
 import { DesktopIntentService } from './intent-service'
 import {
   DesktopSceneService,
+  reacquireAppInScene,
   reacquireWindowInScene,
+  toAppReacquireSelector,
+  toObservedAppIdentity,
   toObservedWindowIdentity,
   toReacquireSelector,
 } from './scene-service'
@@ -338,13 +344,23 @@ export class DesktopControlRuntime {
   private verifyFocusAppOnce(params: {
     scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
     expectedApp: string
+    appReacquireSelector: DesktopAppReacquireSelector
   }) {
-    const matched = params.scene.focusedApp === params.expectedApp
+    const reacquire = reacquireAppInScene(params.scene, params.appReacquireSelector)
+    const expectedAppName = reacquire.matchedAppName
+      || params.appReacquireSelector.appName
+      || params.expectedApp
+    const matched = params.scene.focusedApp === expectedAppName
 
     return {
       matched,
       details: {
         expectedApp: params.expectedApp,
+        expectedAppName,
+        appReacquireStatus: reacquire.status,
+        matchedAppName: reacquire.matchedAppName,
+        matchedOwnerPid: reacquire.matchedOwnerPid,
+        windowCountForApp: reacquire.windowCountForApp,
         observedFocusedApp: params.scene.focusedApp,
       },
     }
@@ -353,9 +369,14 @@ export class DesktopControlRuntime {
   private verifyOpenAppOnce(params: {
     scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
     expectedApp: string
+    appReacquireSelector: DesktopAppReacquireSelector
   }) {
-    const windowCountForApp = params.scene.windows.filter(window => window.appName === params.expectedApp).length
-    const matchedBy = params.scene.focusedApp === params.expectedApp
+    const reacquire = reacquireAppInScene(params.scene, params.appReacquireSelector)
+    const expectedAppName = reacquire.matchedAppName
+      || params.appReacquireSelector.appName
+      || params.expectedApp
+    const windowCountForApp = reacquire.windowCountForApp
+    const matchedBy = params.scene.focusedApp === expectedAppName
       ? 'focused_app'
       : windowCountForApp > 0
         ? 'visible_window'
@@ -365,6 +386,10 @@ export class DesktopControlRuntime {
       matched: matchedBy !== 'none',
       details: {
         expectedApp: params.expectedApp,
+        expectedAppName,
+        appReacquireStatus: reacquire.status,
+        matchedAppName: reacquire.matchedAppName,
+        matchedOwnerPid: reacquire.matchedOwnerPid,
         matchedBy,
         windowCountForApp,
         observedFocusedApp: params.scene.focusedApp,
@@ -445,10 +470,26 @@ export class DesktopControlRuntime {
     step: DesktopActionPlanStep
     sceneAfterAction: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
     reacquireSelector?: DesktopWindowReacquireSelector
+    appReacquireSelector?: DesktopAppReacquireSelector
   }): Promise<DesktopSafeLoopVerifyResult> {
     const { step, sceneAfterAction } = params
 
     if (step.kind === 'open_app') {
+      let appReacquireSelector = params.appReacquireSelector || { appName: step.app }
+
+      const updateAppSelector = (details: { matchedAppName?: string, matchedOwnerPid?: number }) => {
+        if (!details.matchedAppName && !Number.isFinite(details.matchedOwnerPid)) {
+          return
+        }
+
+        appReacquireSelector = {
+          appName: details.matchedAppName || appReacquireSelector.appName || step.app,
+          ownerPid: Number.isFinite(details.matchedOwnerPid)
+            ? Number(details.matchedOwnerPid)
+            : appReacquireSelector.ownerPid,
+        }
+      }
+
       const initialInterruption = this.resolveVerifyInterruption()
       if (initialInterruption) {
         return initialInterruption
@@ -457,7 +498,9 @@ export class DesktopControlRuntime {
       const firstAttempt = this.verifyOpenAppOnce({
         scene: sceneAfterAction,
         expectedApp: step.app,
+        appReacquireSelector,
       })
+      updateAppSelector(firstAttempt.details)
       if (firstAttempt.matched) {
         return {
           status: 'passed',
@@ -482,7 +525,9 @@ export class DesktopControlRuntime {
       const secondAttempt = this.verifyOpenAppOnce({
         scene: secondScene,
         expectedApp: step.app,
+        appReacquireSelector,
       })
+      updateAppSelector(secondAttempt.details)
       if (secondAttempt.matched) {
         return {
           status: 'passed',
@@ -508,7 +553,9 @@ export class DesktopControlRuntime {
       const thirdAttempt = this.verifyOpenAppOnce({
         scene: thirdScene,
         expectedApp: step.app,
+        appReacquireSelector,
       })
+      updateAppSelector(thirdAttempt.details)
       if (thirdAttempt.matched) {
         return {
           status: 'passed',
@@ -541,6 +588,21 @@ export class DesktopControlRuntime {
     }
 
     if (step.kind === 'focus_app') {
+      let appReacquireSelector = params.appReacquireSelector || { appName: step.app }
+
+      const updateAppSelector = (details: { matchedAppName?: string, matchedOwnerPid?: number }) => {
+        if (!details.matchedAppName && !Number.isFinite(details.matchedOwnerPid)) {
+          return
+        }
+
+        appReacquireSelector = {
+          appName: details.matchedAppName || appReacquireSelector.appName || step.app,
+          ownerPid: Number.isFinite(details.matchedOwnerPid)
+            ? Number(details.matchedOwnerPid)
+            : appReacquireSelector.ownerPid,
+        }
+      }
+
       const initialInterruption = this.resolveVerifyInterruption()
       if (initialInterruption) {
         return initialInterruption
@@ -549,7 +611,9 @@ export class DesktopControlRuntime {
       const firstAttempt = this.verifyFocusAppOnce({
         scene: sceneAfterAction,
         expectedApp: step.app,
+        appReacquireSelector,
       })
+      updateAppSelector(firstAttempt.details)
       if (firstAttempt.matched) {
         return {
           status: 'passed',
@@ -571,7 +635,9 @@ export class DesktopControlRuntime {
       const secondAttempt = this.verifyFocusAppOnce({
         scene: resampledScene,
         expectedApp: step.app,
+        appReacquireSelector,
       })
+      updateAppSelector(secondAttempt.details)
       if (secondAttempt.matched) {
         return {
           status: 'passed',
@@ -1009,6 +1075,7 @@ export class DesktopControlRuntime {
       let verificationFailed = 0
       let verificationTargetUnavailable = false
       const windowSelectorByPlanWindowId = new Map<string, DesktopWindowReacquireSelector>()
+      const appSelectorByRequestedApp = new Map<string, DesktopAppReacquireSelector>()
 
       for (const [stepIndex, step] of effectiveSteps.entries()) {
         const stepCost = this.estimateLoopStepCost(step)
@@ -1099,6 +1166,9 @@ export class DesktopControlRuntime {
         let reacquireSelector: DesktopWindowReacquireSelector | undefined
         let reacquireStatus: DesktopWindowReacquireStatus = 'not_needed'
         let matchedWindowId: string | undefined
+        let observedAppIdentity: DesktopObservedAppIdentity | undefined
+        let appReacquireSelector: DesktopAppReacquireSelector | undefined
+        let appReacquireStatus: DesktopAppReacquireStatus = 'not_needed'
         let stepForAction = step
 
         appendTrace({
@@ -1194,6 +1264,42 @@ export class DesktopControlRuntime {
           })
         }
 
+        if (step.kind === 'focus_app' || step.kind === 'open_app') {
+          const observed = toObservedAppIdentity(sceneBeforeAction, step.app)
+          const cachedSelector = appSelectorByRequestedApp.get(step.app)
+
+          appReacquireSelector = observed
+            ? toAppReacquireSelector(observed)
+            : cachedSelector || { appName: step.app }
+          observedAppIdentity = observed
+
+          const appReacquire = reacquireAppInScene(sceneBeforeAction, appReacquireSelector)
+          appReacquireStatus = appReacquire.status
+
+          if (appReacquire.matchedAppName || Number.isFinite(appReacquire.matchedOwnerPid)) {
+            appReacquireSelector = {
+              appName: appReacquire.matchedAppName || appReacquireSelector.appName || step.app,
+              ownerPid: Number.isFinite(appReacquire.matchedOwnerPid)
+                ? Number(appReacquire.matchedOwnerPid)
+                : appReacquireSelector.ownerPid,
+            }
+          }
+
+          appSelectorByRequestedApp.set(step.app, appReacquireSelector)
+
+          appendTrace({
+            phase: 'selector_recorded',
+            stepIndex,
+            stepKind: step.kind,
+            message: 'safe_loop_selector_recorded_for_app_step',
+            details: {
+              appReacquireSelector,
+              appReacquireStatus,
+              observedAppIdentity,
+            },
+          })
+        }
+
         appendTrace({
           phase: 'decide',
           stepIndex,
@@ -1246,6 +1352,9 @@ export class DesktopControlRuntime {
             reacquireSelector,
             reacquireStatus,
             matchedWindowId,
+            observedAppIdentity,
+            appReacquireSelector,
+            appReacquireStatus,
           }
           stepResults.push(stepResult)
 
@@ -1280,6 +1389,9 @@ export class DesktopControlRuntime {
             reacquireSelector,
             reacquireStatus,
             matchedWindowId,
+            observedAppIdentity,
+            appReacquireSelector,
+            appReacquireStatus,
           }
           stepResults.push(stepResult)
 
@@ -1308,6 +1420,8 @@ export class DesktopControlRuntime {
             requestedWindowId: this.isWindowTargetStep(step) ? step.windowId : undefined,
             matchedWindowId,
             reacquireStatus,
+            appReacquireSelector,
+            appReacquireStatus,
           },
         })
 
@@ -1315,6 +1429,7 @@ export class DesktopControlRuntime {
           step: stepForAction,
           sceneAfterAction,
           reacquireSelector,
+          appReacquireSelector,
         })
 
         if (verification.status === 'interrupted') {
@@ -1338,6 +1453,9 @@ export class DesktopControlRuntime {
             reacquireSelector,
             reacquireStatus,
             matchedWindowId: verification.matchedWindowId || matchedWindowId,
+            observedAppIdentity,
+            appReacquireSelector,
+            appReacquireStatus,
           }
           stepResults.push(stepResult)
 
@@ -1378,8 +1496,25 @@ export class DesktopControlRuntime {
           reacquireSelector,
           reacquireStatus,
           matchedWindowId: verification.matchedWindowId || matchedWindowId,
+          observedAppIdentity,
+          appReacquireSelector,
+          appReacquireStatus,
         }
         stepResults.push(stepResult)
+
+        if (verification.status === 'passed' && (step.kind === 'open_app' || step.kind === 'focus_app')) {
+          const details = verification.details || {}
+          const matchedAppName = typeof details.matchedAppName === 'string' ? details.matchedAppName : undefined
+          const matchedOwnerPidCandidate = Number((details as { matchedOwnerPid?: unknown }).matchedOwnerPid)
+          const matchedOwnerPid = Number.isFinite(matchedOwnerPidCandidate)
+            ? matchedOwnerPidCandidate
+            : undefined
+
+          appSelectorByRequestedApp.set(step.app, {
+            appName: matchedAppName || step.app,
+            ownerPid: matchedOwnerPid,
+          })
+        }
 
         appendTrace({
           phase: 'verify',

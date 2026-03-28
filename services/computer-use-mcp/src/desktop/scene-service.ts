@@ -1,7 +1,10 @@
 import type { DesktopExecutor } from '../types'
 import type {
+  DesktopAppReacquireStatus,
+  DesktopObservedAppIdentity,
   DesktopObservedWindowIdentity,
   DesktopScene,
+  DesktopAppReacquireSelector,
   DesktopWindowReacquireSelector,
   DesktopWindowReacquireStatus,
   WindowNode,
@@ -10,6 +13,13 @@ import type {
 export interface DesktopWindowReacquireResult {
   status: Exclude<DesktopWindowReacquireStatus, 'not_needed'>
   matchedWindow?: WindowNode
+}
+
+export interface DesktopAppReacquireResult {
+  status: Exclude<DesktopAppReacquireStatus, 'not_needed'>
+  matchedAppName?: string
+  matchedOwnerPid?: number
+  windowCountForApp: number
 }
 
 function fallbackBounds() {
@@ -45,6 +55,33 @@ function hasNonEmptyTitle(title: string | undefined) {
   return Boolean(title && title.trim().length > 0)
 }
 
+function normalizeAppName(appName: string | undefined) {
+  return (appName || '').trim().toLowerCase()
+}
+
+function getAppWindowsByName(scene: DesktopScene, appName: string) {
+  const normalized = normalizeAppName(appName)
+  if (!normalized) {
+    return []
+  }
+
+  return scene.windows.filter(window => normalizeAppName(window.appName) === normalized)
+}
+
+function pickSingleOwnerPid(windows: WindowNode[]) {
+  const ownerPidSet = new Set(
+    windows
+      .map(window => window.ownerPid)
+      .filter(ownerPid => Number.isFinite(ownerPid)) as number[],
+  )
+
+  if (ownerPidSet.size !== 1) {
+    return undefined
+  }
+
+  return [...ownerPidSet][0]
+}
+
 export function toObservedWindowIdentity(window: WindowNode): DesktopObservedWindowIdentity {
   return {
     windowId: window.id,
@@ -64,6 +101,76 @@ export function toReacquireSelector(identity: DesktopObservedWindowIdentity): De
     ownerPid: identity.ownerPid,
     appName: hasFallbackAppTitle ? identity.appName : undefined,
     title: hasFallbackAppTitle ? identity.title : undefined,
+  }
+}
+
+export function toObservedAppIdentity(scene: DesktopScene, appName: string): DesktopObservedAppIdentity | undefined {
+  const windows = getAppWindowsByName(scene, appName)
+  if (windows.length === 0) {
+    return undefined
+  }
+
+  const ownerPid = pickSingleOwnerPid(windows)
+  const canonicalAppName = windows.find(window => window.focused)?.appName || windows[0]?.appName || appName
+
+  return {
+    appName: canonicalAppName,
+    ownerPid,
+    windowCount: windows.length,
+  }
+}
+
+export function toAppReacquireSelector(identity: DesktopObservedAppIdentity): DesktopAppReacquireSelector {
+  return {
+    appName: identity.appName,
+    ownerPid: identity.ownerPid,
+  }
+}
+
+export function reacquireAppInScene(scene: DesktopScene, selector: DesktopAppReacquireSelector): DesktopAppReacquireResult {
+  if (Number.isFinite(selector.ownerPid)) {
+    const ownerPid = Number(selector.ownerPid)
+    const pidMatches = scene.windows.filter(window => window.ownerPid === ownerPid)
+
+    if (pidMatches.length > 0) {
+      const names = new Set(pidMatches.map(window => normalizeAppName(window.appName)).filter(Boolean))
+      if (names.size !== 1) {
+        return {
+          status: 'ambiguous',
+          windowCountForApp: pidMatches.length,
+        }
+      }
+
+      const matchedAppName = pidMatches.find(window => window.focused)?.appName || pidMatches[0]?.appName
+      return {
+        status: 'matched_by_owner_pid',
+        matchedAppName,
+        matchedOwnerPid: ownerPid,
+        windowCountForApp: pidMatches.length,
+      }
+    }
+  }
+
+  if (!selector.appName || !normalizeAppName(selector.appName)) {
+    return {
+      status: 'not_found',
+      windowCountForApp: 0,
+    }
+  }
+
+  const nameMatches = getAppWindowsByName(scene, selector.appName)
+  if (nameMatches.length === 0) {
+    return {
+      status: 'not_found',
+      windowCountForApp: 0,
+    }
+  }
+
+  return {
+    status: 'matched_by_app_name',
+    matchedAppName: nameMatches.find(window => window.focused)?.appName || nameMatches[0]?.appName,
+    matchedOwnerPid: pickSingleOwnerPid(nameMatches),
+    windowCountForApp: nameMatches.length,
   }
 }
 

@@ -58,11 +58,29 @@ export interface DesktopWindowReacquireSelector {
   title?: string
 }
 
+export interface DesktopObservedAppIdentity {
+  appName: string
+  ownerPid?: number
+  windowCount: number
+}
+
+export interface DesktopAppReacquireSelector {
+  appName?: string
+  ownerPid?: number
+}
+
 export type DesktopWindowReacquireStatus
   = | 'not_needed'
     | 'matched_by_window_id'
     | 'matched_by_window_number_pid'
     | 'matched_by_app_title'
+    | 'ambiguous'
+    | 'not_found'
+
+export type DesktopAppReacquireStatus
+  = | 'not_needed'
+    | 'matched_by_owner_pid'
+    | 'matched_by_app_name'
     | 'ambiguous'
     | 'not_found'
 
@@ -223,6 +241,9 @@ export interface DesktopSafeLoopStepResult {
   reacquireSelector?: DesktopWindowReacquireSelector
   reacquireStatus?: DesktopWindowReacquireStatus
   matchedWindowId?: string
+  observedAppIdentity?: DesktopObservedAppIdentity
+  appReacquireSelector?: DesktopAppReacquireSelector
+  appReacquireStatus?: DesktopAppReacquireStatus
 }
 
 export interface DesktopSafeLoopRequest {

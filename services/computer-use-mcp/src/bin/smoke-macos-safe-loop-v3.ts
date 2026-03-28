@@ -258,8 +258,17 @@ async function main() {
       if (openAppStepResults.length === 0) {
         throw new Error('desktop_run_safe_agent_loop open_app expected non-empty stepResults')
       }
+      const openAppStep = openAppStepResults[0] || {}
+      const openAppSelector = openAppStep.appReacquireSelector
+      const openAppReacquireStatus = String(openAppStep.appReacquireStatus || '')
+      if (!openAppSelector || typeof openAppSelector !== 'object') {
+        throw new Error('desktop_run_safe_agent_loop open_app expected appReacquireSelector object')
+      }
+      if (!['matched_by_owner_pid', 'matched_by_app_name', 'ambiguous', 'not_found'].includes(openAppReacquireStatus)) {
+        throw new Error(`desktop_run_safe_agent_loop open_app expected appReacquireStatus, got ${openAppReacquireStatus}`)
+      }
 
-      const openAppVerification = openAppStepResults[0]?.verificationDetails
+      const openAppVerification = openAppStep.verificationDetails
       if (!openAppVerification || typeof openAppVerification !== 'object') {
         throw new Error('desktop_run_safe_agent_loop open_app expected verificationDetails object')
       }
@@ -312,6 +321,12 @@ async function main() {
       appRun = requireStructuredContent(appRunRaw, 'desktop_run_safe_agent_loop focus_app')
       if (appRun.status !== 'ok' || appRun.safeLoopStatus !== 'succeeded') {
         throw new Error(`desktop_run_safe_agent_loop focus_app expected ok/succeeded, got status=${String(appRun.status)} safeLoopStatus=${String(appRun.safeLoopStatus)}`)
+      }
+
+      const appRunStepResults = Array.isArray(appRun.stepResults) ? appRun.stepResults as Array<Record<string, unknown>> : []
+      const appRunStep = appRunStepResults[0] || {}
+      if (!appRunStep.appReacquireSelector || typeof appRunStep.appReacquireSelector !== 'object') {
+        throw new Error('desktop_run_safe_agent_loop focus_app expected appReacquireSelector object')
       }
     }
 
