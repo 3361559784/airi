@@ -237,6 +237,7 @@ async function main() {
         ? focusedApp
         : undefined
     let openAppRun: Record<string, unknown> | undefined
+    let openThenFocusRun: Record<string, unknown> | undefined
 
     if (openAppTarget) {
       const openAppRunRaw = await client.callTool({
@@ -294,6 +295,40 @@ async function main() {
         throw new Error(`desktop_run_safe_agent_loop open_app expected non-negative windowCountForApp, got ${String(windowCountForApp)}`)
       }
 
+      const openThenFocusRunRaw = await client.callTool({
+        name: 'desktop_run_safe_agent_loop',
+        arguments: {
+          objective: 'v3 safe loop open then focus app smoke',
+          plan: [
+            { kind: 'open_app', app: openAppTarget },
+            { kind: 'focus_app', app: openAppTarget },
+          ],
+          maxSteps: 2,
+          actionBudget: 6,
+          stopOnVerificationFailure: true,
+        },
+      })
+      openThenFocusRun = requireStructuredContent(openThenFocusRunRaw, 'desktop_run_safe_agent_loop open_then_focus')
+      if (openThenFocusRun.status !== 'ok' || openThenFocusRun.safeLoopStatus !== 'succeeded') {
+        throw new Error(`desktop_run_safe_agent_loop open_then_focus expected ok/succeeded, got status=${String(openThenFocusRun.status)} safeLoopStatus=${String(openThenFocusRun.safeLoopStatus)}`)
+      }
+
+      const openThenFocusResults = Array.isArray(openThenFocusRun.stepResults)
+        ? openThenFocusRun.stepResults as Array<Record<string, unknown>>
+        : []
+      if (openThenFocusResults.length < 2) {
+        throw new Error(`desktop_run_safe_agent_loop open_then_focus expected two stepResults, got ${openThenFocusResults.length}`)
+      }
+
+      const openStep = openThenFocusResults[0]
+      const focusStep = openThenFocusResults[1]
+      if (String(openStep?.stepKind || '') !== 'open_app' || String(focusStep?.stepKind || '') !== 'focus_app') {
+        throw new Error('desktop_run_safe_agent_loop open_then_focus expected open_app then focus_app step order')
+      }
+
+      if (String(openStep?.verificationStatus || '') !== 'passed' || String(focusStep?.verificationStatus || '') !== 'passed') {
+        throw new Error('desktop_run_safe_agent_loop open_then_focus expected both steps to pass verification')
+      }
     }
 
     const traceRaw = await client.callTool({
@@ -364,6 +399,7 @@ async function main() {
         run,
         openAppTarget,
         openAppRun,
+        openThenFocusRun,
         appRun,
         traceCount: runs.length,
         interrupt,

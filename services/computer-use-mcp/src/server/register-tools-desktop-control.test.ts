@@ -1001,6 +1001,154 @@ describe('registerComputerUseTools: desktop control tools', () => {
     expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['open_app', 'wait', 'wait'])
   })
 
+  it('applies explicit open_app to focus_app handoff without auto-inserting extra actions', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+    const observeWindows = runtime.executor.observeWindows as unknown as ReturnType<typeof vi.fn>
+
+    observeWindows
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.000Z',
+        windows: [{
+          id: 'w-terminal',
+          windowNumber: 102,
+          appName: 'Terminal',
+          title: 'zsh',
+          bounds: { x: 720, y: 0, width: 560, height: 720 },
+          ownerPid: 9002,
+          layer: 11,
+          focused: true,
+        }],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.080Z',
+        windows: [
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: true,
+          },
+          {
+            id: 'w-discord',
+            windowNumber: 203,
+            appName: 'Discord',
+            title: 'Discord',
+            bounds: { x: 100, y: 80, width: 980, height: 700 },
+            ownerPid: 9012,
+            layer: 10,
+            focused: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.120Z',
+        windows: [
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: true,
+          },
+          {
+            id: 'w-discord',
+            windowNumber: 203,
+            appName: 'Discord',
+            title: 'Discord',
+            bounds: { x: 100, y: 80, width: 980, height: 700 },
+            ownerPid: 9012,
+            layer: 10,
+            focused: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Discord',
+        frontmostWindowTitle: 'Discord',
+        observedAt: '2026-01-01T00:00:00.180Z',
+        windows: [
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: false,
+          },
+          {
+            id: 'w-discord',
+            windowNumber: 203,
+            appName: 'Discord',
+            title: 'Discord',
+            bounds: { x: 100, y: 80, width: 980, height: 700 },
+            ownerPid: 9012,
+            layer: 10,
+            focused: true,
+          },
+        ],
+      })
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'open then focus app explicitly',
+      plan: [
+        { kind: 'open_app', app: 'Discord' },
+        { kind: 'focus_app', app: 'Discord' },
+      ],
+      maxSteps: 2,
+      actionBudget: 4,
+      stopOnVerificationFailure: true,
+    })
+
+    expect(run.isError).not.toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'ok',
+      safeLoopStatus: 'succeeded',
+      executedSteps: 2,
+      stepResults: [
+        {
+          stepKind: 'open_app',
+          verificationStatus: 'passed',
+          verificationDetails: {
+            matchedBy: 'visible_window',
+          },
+        },
+        {
+          stepKind: 'focus_app',
+          verificationStatus: 'passed',
+        },
+      ],
+    })
+
+    const trace = ((run.structuredContent as { trace?: Array<Record<string, unknown>> }).trace || [])
+    expect(trace.some(entry => entry.message === 'safe_loop_open_app_focus_app_handoff_applied')).toBe(true)
+    expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['open_app', 'focus_app'])
+  })
+
   it('classifies missing window target as target_unavailable before action execution', async () => {
     const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
     const { server, invoke } = createMockServer()

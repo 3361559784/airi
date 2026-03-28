@@ -1076,6 +1076,11 @@ export class DesktopControlRuntime {
       let verificationTargetUnavailable = false
       const windowSelectorByPlanWindowId = new Map<string, DesktopWindowReacquireSelector>()
       const appSelectorByRequestedApp = new Map<string, DesktopAppReacquireSelector>()
+      let pendingOpenAppHandoff: {
+        app: string
+        matchedAppName?: string
+        matchedOwnerPid?: number
+      } | undefined
 
       for (const [stepIndex, step] of effectiveSteps.entries()) {
         const stepCost = this.estimateLoopStepCost(step)
@@ -1267,10 +1272,18 @@ export class DesktopControlRuntime {
         if (step.kind === 'focus_app' || step.kind === 'open_app') {
           const observed = toObservedAppIdentity(sceneBeforeAction, step.app)
           const cachedSelector = appSelectorByRequestedApp.get(step.app)
+          const handoffSelector = pendingOpenAppHandoff && pendingOpenAppHandoff.app === step.app
+            ? {
+                appName: pendingOpenAppHandoff.matchedAppName || step.app,
+                ownerPid: pendingOpenAppHandoff.matchedOwnerPid,
+              } satisfies DesktopAppReacquireSelector
+            : undefined
 
           appReacquireSelector = observed
             ? toAppReacquireSelector(observed)
-            : cachedSelector || { appName: step.app }
+            : handoffSelector
+              || cachedSelector
+              || { appName: step.app }
           observedAppIdentity = observed
 
           const appReacquire = reacquireAppInScene(sceneBeforeAction, appReacquireSelector)
@@ -1298,6 +1311,18 @@ export class DesktopControlRuntime {
               observedAppIdentity,
             },
           })
+
+          if (pendingOpenAppHandoff && pendingOpenAppHandoff.app === step.app && step.kind === 'focus_app') {
+            appendTrace({
+              phase: 'decide',
+              stepIndex,
+              stepKind: step.kind,
+              message: 'safe_loop_open_app_focus_app_handoff_applied',
+              details: {
+                handoff: pendingOpenAppHandoff,
+              },
+            })
+          }
         }
 
         appendTrace({
@@ -1504,6 +1529,7 @@ export class DesktopControlRuntime {
 
         if (verification.status === 'passed' && (step.kind === 'open_app' || step.kind === 'focus_app')) {
           const details = verification.details || {}
+          const matchedBy = String(details.matchedBy || '')
           const matchedAppName = typeof details.matchedAppName === 'string' ? details.matchedAppName : undefined
           const matchedOwnerPidCandidate = Number((details as { matchedOwnerPid?: unknown }).matchedOwnerPid)
           const matchedOwnerPid = Number.isFinite(matchedOwnerPidCandidate)
@@ -1514,6 +1540,22 @@ export class DesktopControlRuntime {
             appName: matchedAppName || step.app,
             ownerPid: matchedOwnerPid,
           })
+
+          if (step.kind === 'open_app') {
+            pendingOpenAppHandoff = matchedBy === 'focused_app' || matchedBy === 'visible_window'
+              ? {
+                  app: step.app,
+                  matchedAppName,
+                  matchedOwnerPid,
+                }
+              : undefined
+          }
+          else {
+            pendingOpenAppHandoff = undefined
+          }
+        }
+        else {
+          pendingOpenAppHandoff = undefined
         }
 
         appendTrace({
