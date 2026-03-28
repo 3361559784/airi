@@ -139,6 +139,32 @@ export class DesktopActionService {
     }
   }
 
+  async focusApp(app: string) {
+    const focusAttempt = await this.executeSemanticActionWithRetry({
+      kind: 'focus_app',
+      input: { app },
+    }, 'desktop_focus_app')
+
+    const focusResult = focusAttempt.result
+    const focusErrorText = focusAttempt.errorText
+
+    if (!focusAttempt.ok) {
+      return {
+        status: 'failed' as const,
+        reason: isUnsupportedSemanticError(focusErrorText)
+          ? `focus_app_unsupported:${app}`
+          : `focus_app_failed:${app}`,
+        detail: focusResult,
+      }
+    }
+
+    return {
+      status: 'completed' as const,
+      reason: 'focused_app_via_semantic_action',
+      app,
+    }
+  }
+
   async moveResizeWindow(scene: DesktopScene, windowId: string, bounds: { x: number, y: number, width: number, height: number }): Promise<MoveResizeWindowResult> {
     const target = scene.windows.find(window => window.id === windowId)
     if (!target) {
@@ -210,6 +236,24 @@ export class DesktopActionService {
       }
 
       switch (step.kind) {
+        case 'focus_app': {
+          const result = await this.focusApp(step.app)
+          details.push({
+            step,
+            result,
+          })
+          if (result.status !== 'completed') {
+            errors.push(result.reason)
+            return {
+              status: 'failed',
+              executedSteps,
+              errors,
+              details,
+            }
+          }
+          executedSteps += 1
+          break
+        }
         case 'focus_window': {
           const result = await this.focusWindow(scene, step.windowId)
           details.push({

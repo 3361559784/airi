@@ -40,6 +40,33 @@ function success(actionKind: string): CallToolResult {
 }
 
 describe('desktopActionService', () => {
+  it('retries focus_app once on transient semantic failure', async () => {
+    let callCount = 0
+    const executeAction = vi.fn(async (action) => {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'semantic_focus_app_failed' }],
+        } satisfies CallToolResult
+      }
+
+      return success(action.kind)
+    }) as unknown as ExecuteAction
+
+    const service = new DesktopActionService(executeAction)
+    const result = await service.focusApp('Cursor')
+
+    expect(result.status).toBe('completed')
+    expect(executeAction).toHaveBeenCalledTimes(2)
+    expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'focus_app',
+      input: { app: 'Cursor' },
+    }), 'desktop_focus_app', expect.objectContaining({
+      skipApprovalQueue: true,
+    }))
+  })
+
   it('retries focus_window once on transient semantic failure', async () => {
     let callCount = 0
     const executeAction = vi.fn(async (action) => {
@@ -179,5 +206,23 @@ describe('desktopActionService', () => {
 
     expect(result.status).toBe('unsupported')
     expect(result.errors[0]).toContain('set_window_bounds_unsupported')
+  })
+
+  it('runs focus_app as part of a desktop action plan', async () => {
+    const executeAction = vi.fn(async action => success(action.kind)) as unknown as ExecuteAction
+    const service = new DesktopActionService(executeAction)
+
+    const result = await service.runActionPlan(createScene(), {
+      id: 'p-focus-app',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      steps: [{
+        kind: 'focus_app',
+        app: 'Cursor',
+      }],
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.executedSteps).toBe(1)
+    expect(result.errors).toEqual([])
   })
 })

@@ -568,6 +568,118 @@ describe('registerComputerUseTools: desktop control tools', () => {
     expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['focus_window'])
   })
 
+  it('runs desktop safe agent loop for focus_app and passes after one verify resample', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+    const observeWindows = runtime.executor.observeWindows as unknown as ReturnType<typeof vi.fn>
+
+    observeWindows
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.000Z',
+        windows: [
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: true,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.100Z',
+        windows: [
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: true,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Cursor',
+        frontmostWindowTitle: 'repo - cursor',
+        observedAt: '2026-01-01T00:00:00.220Z',
+        windows: [
+          {
+            id: 'w-cursor',
+            windowNumber: 101,
+            appName: 'Cursor',
+            title: 'repo - cursor',
+            bounds: { x: 0, y: 0, width: 720, height: 720 },
+            ownerPid: 9001,
+            layer: 10,
+            focused: true,
+          },
+        ],
+      })
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'focus cursor app',
+      plan: [{
+        kind: 'focus_app',
+        app: 'Cursor',
+      }],
+      maxSteps: 1,
+      actionBudget: 2,
+    })
+
+    expect(run.isError).not.toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'ok',
+      safeLoopStatus: 'succeeded',
+      executedSteps: 1,
+      verification: {
+        attempted: 1,
+        passed: 1,
+        failed: 0,
+      },
+      stepResults: [
+        {
+          stepKind: 'focus_app',
+          actionStatus: 'completed',
+          verificationStatus: 'passed',
+        },
+      ],
+    })
+
+    const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]?.verificationDetails).toMatchObject({
+      attempts: 2,
+      firstAttempt: {
+        expectedApp: 'Cursor',
+        observedFocusedApp: 'Terminal',
+      },
+      secondAttempt: {
+        expectedApp: 'Cursor',
+        observedFocusedApp: 'Cursor',
+      },
+    })
+
+    expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['focus_app', 'wait'])
+  })
+
   it('classifies missing window target as target_unavailable before action execution', async () => {
     const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
     const { server, invoke } = createMockServer()

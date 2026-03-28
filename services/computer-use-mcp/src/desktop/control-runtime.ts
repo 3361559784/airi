@@ -198,6 +198,7 @@ export class DesktopControlRuntime {
 
   private estimateLoopStepCost(step: DesktopActionPlanStep) {
     switch (step.kind) {
+      case 'focus_app':
       case 'focus_window':
       case 'move_resize_window':
         return 2
@@ -331,6 +332,21 @@ export class DesktopControlRuntime {
     }
   }
 
+  private verifyFocusAppOnce(params: {
+    scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
+    expectedApp: string
+  }) {
+    const matched = params.scene.focusedApp === params.expectedApp
+
+    return {
+      matched,
+      details: {
+        expectedApp: params.expectedApp,
+        observedFocusedApp: params.scene.focusedApp,
+      },
+    }
+  }
+
   private verifySetBoundsOnce(params: {
     scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
     step: Extract<DesktopActionPlanStep, { kind: 'move_resize_window' }>
@@ -406,6 +422,62 @@ export class DesktopControlRuntime {
     reacquireSelector?: DesktopWindowReacquireSelector
   }): Promise<DesktopSafeLoopVerifyResult> {
     const { step, sceneAfterAction } = params
+
+    if (step.kind === 'focus_app') {
+      const initialInterruption = this.resolveVerifyInterruption()
+      if (initialInterruption) {
+        return initialInterruption
+      }
+
+      const firstAttempt = this.verifyFocusAppOnce({
+        scene: sceneAfterAction,
+        expectedApp: step.app,
+      })
+      if (firstAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_focus_app_passed',
+          details: {
+            attempts: 1,
+            ...firstAttempt.details,
+          },
+        }
+      }
+
+      await this.waitBeforeVerifyResample(VERIFY_FOCUS_WINDOW_RESAMPLE_DELAY_MS, sceneAfterAction)
+      const interruptionAfterWait = this.resolveVerifyInterruption()
+      if (interruptionAfterWait) {
+        return interruptionAfterWait
+      }
+
+      const resampledScene = await this.observeScene()
+      const secondAttempt = this.verifyFocusAppOnce({
+        scene: resampledScene,
+        expectedApp: step.app,
+      })
+      if (secondAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_focus_app_passed',
+          details: {
+            attempts: 2,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+          },
+        }
+      }
+
+      return {
+        status: 'failed',
+        reason: 'verify_focus_app_failed',
+        details: {
+          expectedApp: step.app,
+          attempts: 2,
+          firstAttempt: firstAttempt.details,
+          secondAttempt: secondAttempt.details,
+        },
+      }
+    }
 
     if (step.kind === 'focus_window') {
       const initialInterruption = this.resolveVerifyInterruption()
@@ -1115,6 +1187,7 @@ export class DesktopControlRuntime {
           stepKind: step.kind,
           message: 'safe_loop_step_verify_started',
           details: {
+            requestedApp: step.kind === 'focus_app' ? step.app : undefined,
             requestedWindowId: this.isWindowTargetStep(step) ? step.windowId : undefined,
             matchedWindowId,
             reacquireStatus,

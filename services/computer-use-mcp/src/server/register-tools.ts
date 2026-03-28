@@ -63,6 +63,10 @@ const desktopBoundsSchema = z.object({
 })
 const desktopSafeLoopStepSchema = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('focus_app'),
+    app: z.string().min(1),
+  }),
+  z.object({
     kind: z.literal('focus_window'),
     windowId: z.string().min(1),
   }),

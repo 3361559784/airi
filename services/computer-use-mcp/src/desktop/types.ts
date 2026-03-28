@@ -93,6 +93,10 @@ export interface LayoutPreview {
 
 export type DesktopActionPlanStep
   = | {
+    kind: 'focus_app'
+    app: string
+  }
+  | {
     kind: 'focus_window'
     windowId: string
   }

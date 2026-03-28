@@ -152,6 +152,7 @@ async function main() {
     const sceneResult = requireStructuredContent(sceneRaw, 'desktop_observe_scene')
     const scene = sceneResult.scene as Record<string, unknown> | undefined
     const windows = Array.isArray(scene?.windows) ? scene?.windows as Array<Record<string, unknown>> : []
+    const focusedApp = typeof scene?.focusedApp === 'string' ? scene.focusedApp : undefined
     const focusedWindowId = typeof scene?.focusedWindowId === 'string' ? scene.focusedWindowId : undefined
 
     const screenshotRaw = await client.callTool({
@@ -234,6 +235,24 @@ async function main() {
       throw new Error(`desktop_get_safe_loop_trace expected runs, got status=${String(trace.status)} count=${runs.length}`)
     }
 
+    let appRun: Record<string, unknown> | undefined
+    if (focusedApp) {
+      const appRunRaw = await client.callTool({
+        name: 'desktop_run_safe_agent_loop',
+        arguments: {
+          objective: 'v3 safe loop app focus smoke',
+          plan: [{ kind: 'focus_app', app: focusedApp }],
+          maxSteps: 1,
+          actionBudget: 4,
+          stopOnVerificationFailure: true,
+        },
+      })
+      appRun = requireStructuredContent(appRunRaw, 'desktop_run_safe_agent_loop focus_app')
+      if (appRun.status !== 'ok' || appRun.safeLoopStatus !== 'succeeded') {
+        throw new Error(`desktop_run_safe_agent_loop focus_app expected ok/succeeded, got status=${String(appRun.status)} safeLoopStatus=${String(appRun.safeLoopStatus)}`)
+      }
+    }
+
     const interruptRaw = await client.callTool({
       name: 'desktop_report_user_input',
       arguments: { source: 'keyboard' },
@@ -262,8 +281,10 @@ async function main() {
         screenshot,
         lease,
         observedWindowCount: windows.length,
+        focusedApp,
         focusedWindowId,
         run,
+        appRun,
         traceCount: runs.length,
         interrupt,
         leaseRequired,
