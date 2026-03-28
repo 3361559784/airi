@@ -138,16 +138,20 @@ describe('registerComputerUseTools: desktop control tools', () => {
           windows: [
             {
               id: 'w-cursor',
+              windowNumber: 101,
               appName: 'Cursor',
               title: 'repo - cursor',
               bounds: { x: 0, y: 0, width: 720, height: 720 },
+              ownerPid: 9001,
               layer: 10,
             },
             {
               id: 'w-terminal',
+              windowNumber: 102,
               appName: 'Terminal',
               title: 'zsh',
               bounds: { x: 720, y: 0, width: 560, height: 720 },
+              ownerPid: 9002,
               layer: 11,
             },
           ],
@@ -564,6 +568,174 @@ describe('registerComputerUseTools: desktop control tools', () => {
     expect(executeAction.mock.calls.map(call => call[0].kind)).toEqual(['focus_window'])
   })
 
+  it('classifies missing window target as target_unavailable before action execution', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+
+    ;(runtime.executor.observeWindows as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      frontmostAppName: 'Terminal',
+      frontmostWindowTitle: 'zsh',
+      observedAt: '2026-01-01T00:00:00.000Z',
+      windows: [
+        {
+          id: 'w-terminal',
+          windowNumber: 102,
+          appName: 'Terminal',
+          title: 'zsh',
+          bounds: { x: 720, y: 0, width: 560, height: 720 },
+          ownerPid: 9002,
+          layer: 11,
+        },
+      ],
+    })
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'missing focus target',
+      plan: [{
+        kind: 'focus_window',
+        windowId: 'w-cursor',
+      }],
+      maxSteps: 1,
+      actionBudget: 2,
+    })
+
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'failed',
+      failureClassification: 'target_unavailable',
+      executedSteps: 0,
+    })
+
+    const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      stepKind: 'focus_window',
+      actionStatus: 'failed',
+      verificationStatus: 'verification_skipped',
+      reacquireStatus: 'not_found',
+    })
+    expect(executeAction).not.toHaveBeenCalled()
+  })
+
+  it('keeps focus verification stable when window id changes but windowNumber+ownerPid remain stable', async () => {
+    const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
+    const { server, invoke } = createMockServer()
+    const observeWindows = runtime.executor.observeWindows as unknown as ReturnType<typeof vi.fn>
+
+    observeWindows
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.000Z',
+        windows: [
+          {
+            id: 'w-cursor-old',
+            windowNumber: 101,
+            appName: 'Cursor',
+            title: 'repo - cursor',
+            bounds: { x: 0, y: 0, width: 720, height: 720 },
+            ownerPid: 9001,
+            layer: 10,
+          },
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Cursor',
+        frontmostWindowTitle: 'repo - cursor',
+        observedAt: '2026-01-01T00:00:00.150Z',
+        windows: [
+          {
+            id: 'w-cursor-new',
+            windowNumber: 101,
+            appName: 'Cursor',
+            title: 'repo - cursor',
+            bounds: { x: 0, y: 0, width: 720, height: 720 },
+            ownerPid: 9001,
+            layer: 10,
+          },
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+          },
+        ],
+      })
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'window identity stability',
+      plan: [{
+        kind: 'focus_window',
+        windowId: 'w-cursor-old',
+      }],
+      maxSteps: 1,
+      actionBudget: 2,
+    })
+
+    expect(run.isError).not.toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'ok',
+      safeLoopStatus: 'succeeded',
+      executedSteps: 1,
+      verification: {
+        attempted: 1,
+        passed: 1,
+        failed: 0,
+      },
+    })
+
+    const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      stepKind: 'focus_window',
+      actionStatus: 'completed',
+      verificationStatus: 'passed',
+      matchedWindowId: 'w-cursor-new',
+      observedIdentity: {
+        windowNumber: 101,
+        ownerPid: 9001,
+      },
+      reacquireSelector: {
+        windowNumber: 101,
+        ownerPid: 9001,
+      },
+    })
+
+    expect(stepResults[0]?.verificationDetails).toMatchObject({
+      attempts: 1,
+      verifyReacquireStatus: 'matched_by_window_number_pid',
+    })
+  })
+
   it('returns failed with verification classification when verify fails but stopOnVerificationFailure=false', async () => {
     const executeAction = vi.fn(async (action: ActionInvocation) => makeExecutedResult(action))
     const { server, invoke } = createMockServer()
@@ -739,6 +911,107 @@ describe('registerComputerUseTools: desktop control tools', () => {
       interruptedBy: 'user_input',
     })
     expect(run.structuredContent).not.toHaveProperty('failureClassification')
+  })
+
+  it('interrupts verify resample when user input preempts the lease mid-verification', async () => {
+    const { server, invoke } = createMockServer()
+    const executeAction = vi.fn(async (action: ActionInvocation) => {
+      if (action.kind === 'wait') {
+        await invoke('desktop_report_user_input', { source: 'keyboard' })
+      }
+
+      return makeExecutedResult(action)
+    })
+    const observeWindows = runtime.executor.observeWindows as unknown as ReturnType<typeof vi.fn>
+
+    observeWindows
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.000Z',
+        windows: [
+          {
+            id: 'w-cursor-old',
+            windowNumber: 101,
+            appName: 'Cursor',
+            title: 'repo - cursor',
+            bounds: { x: 0, y: 0, width: 720, height: 720 },
+            ownerPid: 9001,
+            layer: 10,
+          },
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: true,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        frontmostAppName: 'Terminal',
+        frontmostWindowTitle: 'zsh',
+        observedAt: '2026-01-01T00:00:00.100Z',
+        windows: [
+          {
+            id: 'w-cursor-old',
+            windowNumber: 101,
+            appName: 'Cursor',
+            title: 'repo - cursor',
+            bounds: { x: 0, y: 0, width: 720, height: 720 },
+            ownerPid: 9001,
+            layer: 10,
+          },
+          {
+            id: 'w-terminal',
+            windowNumber: 102,
+            appName: 'Terminal',
+            title: 'zsh',
+            bounds: { x: 720, y: 0, width: 560, height: 720 },
+            ownerPid: 9002,
+            layer: 11,
+            focused: true,
+          },
+        ],
+      })
+
+    registerComputerUseTools({
+      server,
+      runtime,
+      executeAction,
+      enableTestTools: false,
+    })
+
+    await invoke('desktop_request_lease', { kind: 'act', ttlMs: 5_000 })
+
+    const run = await invoke('desktop_run_safe_agent_loop', {
+      objective: 'verify resample interrupted by user input',
+      plan: [{
+        kind: 'focus_window',
+        windowId: 'w-cursor-old',
+      }],
+      maxSteps: 1,
+      actionBudget: 2,
+    })
+
+    expect(run.isError).toBe(true)
+    expect(run.structuredContent).toMatchObject({
+      status: 'error',
+      safeLoopStatus: 'interrupted',
+      interruptedBy: 'user_input',
+    })
+    expect(run.structuredContent).not.toHaveProperty('failureClassification')
+
+    const stepResults = (run.structuredContent as { stepResults?: Array<Record<string, unknown>> }).stepResults || []
+    expect(stepResults[0]).toMatchObject({
+      stepKind: 'focus_window',
+      actionStatus: 'completed',
+      verificationStatus: 'verification_skipped',
+      reason: 'safe_loop_interrupted_due_to_user_input_preemption',
+    })
   })
 
   it('prefers durable safe-loop artifact when merging trace sources by runId', async () => {

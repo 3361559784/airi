@@ -41,6 +41,31 @@ export interface WindowNode {
   axRole?: string
 }
 
+export interface DesktopObservedWindowIdentity {
+  windowId: string
+  windowNumber?: number
+  ownerPid?: number
+  appName: string
+  title: string
+  bounds: Bounds
+}
+
+export interface DesktopWindowReacquireSelector {
+  windowId?: string
+  windowNumber?: number
+  ownerPid?: number
+  appName?: string
+  title?: string
+}
+
+export type DesktopWindowReacquireStatus
+  = | 'not_needed'
+    | 'matched_by_window_id'
+    | 'matched_by_window_number_pid'
+    | 'matched_by_app_title'
+    | 'ambiguous'
+    | 'not_found'
+
 export interface DesktopScene {
   capturedAt: string
   screens: Array<{ id: string, bounds: Bounds }>
@@ -106,6 +131,12 @@ export type DesktopSafeLoopPhase
     | 'decide'
     | 'act'
     | 'verify'
+    | 'selector_recorded'
+    | 'target_reacquired'
+    | 'target_reacquire_failed'
+    | 'verify_started'
+    | 'verify_passed'
+    | 'verify_failed'
     | 'interrupt'
     | 'budget'
     | 'completed'
@@ -139,6 +170,7 @@ export type DesktopSafeLoopFailureClassification
     | 'budget_exhausted'
     | 'action_failed'
     | 'verification_failed'
+    | 'target_unavailable'
     | 'runtime_error'
 
 export type DesktopSafeLoopInterruptedBy
@@ -179,6 +211,10 @@ export interface DesktopSafeLoopStepResult {
   sceneBefore?: DesktopSafeLoopSceneSummary
   sceneAfter?: DesktopSafeLoopSceneSummary
   verificationDetails?: Record<string, unknown>
+  observedIdentity?: DesktopObservedWindowIdentity
+  reacquireSelector?: DesktopWindowReacquireSelector
+  reacquireStatus?: DesktopWindowReacquireStatus
+  matchedWindowId?: string
 }
 
 export interface DesktopSafeLoopRequest {

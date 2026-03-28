@@ -191,6 +191,39 @@ async function main() {
       throw new Error(`desktop_run_safe_agent_loop expected ok/succeeded, got status=${String(run.status)} safeLoopStatus=${String(run.safeLoopStatus)}`)
     }
 
+    const stepResults = Array.isArray(run.stepResults) ? run.stepResults as Array<Record<string, unknown>> : []
+    if (stepResults.length === 0) {
+      throw new Error('desktop_run_safe_agent_loop expected non-empty stepResults')
+    }
+
+    const firstStep = stepResults[0]
+    const firstStepKind = String(firstStep?.stepKind || '')
+    if (firstStepKind === 'focus_window' || firstStepKind === 'move_resize_window') {
+      const observedIdentity = firstStep?.observedIdentity
+      const reacquireSelector = firstStep?.reacquireSelector
+      const reacquireStatus = String(firstStep?.reacquireStatus || '')
+
+      if (!observedIdentity || typeof observedIdentity !== 'object' || !reacquireSelector || typeof reacquireSelector !== 'object') {
+        throw new Error('safe-loop window step missing observedIdentity/reacquireSelector in v3.2')
+      }
+
+      if (!reacquireStatus) {
+        throw new Error('safe-loop window step missing reacquireStatus in v3.2')
+      }
+
+      const observedWindowNumber = (observedIdentity as Record<string, unknown>).windowNumber
+      const observedOwnerPid = (observedIdentity as Record<string, unknown>).ownerPid
+      const selectorWindowNumber = (reacquireSelector as Record<string, unknown>).windowNumber
+      const selectorOwnerPid = (reacquireSelector as Record<string, unknown>).ownerPid
+      const hasStableWindowNumberPid = Number.isFinite(Number(observedWindowNumber)) && Number.isFinite(Number(observedOwnerPid))
+
+      if (hasStableWindowNumberPid) {
+        if (Number(selectorWindowNumber) !== Number(observedWindowNumber) || Number(selectorOwnerPid) !== Number(observedOwnerPid)) {
+          throw new Error('safe-loop v3.2 expected windowNumber+ownerPid to stay stable between observedIdentity and reacquireSelector')
+        }
+      }
+    }
+
     const traceRaw = await client.callTool({
       name: 'desktop_get_safe_loop_trace',
       arguments: { limit: 5 },

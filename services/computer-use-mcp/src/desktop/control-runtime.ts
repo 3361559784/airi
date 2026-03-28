@@ -4,12 +4,15 @@ import type {
   ControlLeaseKind,
   DesktopActionPlan,
   DesktopActionPlanStep,
+  DesktopObservedWindowIdentity,
   DesktopSafeLoopFailureClassification,
   DesktopSafeLoopInterruptedBy,
   DesktopSafeLoopRequest,
   DesktopSafeLoopRun,
   DesktopSafeLoopSceneSummary,
   DesktopSafeLoopStepResult,
+  DesktopWindowReacquireSelector,
+  DesktopWindowReacquireStatus,
   LayoutPresetId,
 } from './types'
 
@@ -17,12 +20,25 @@ import { DesktopActionService } from './action-service'
 import { ControlArbiter } from './control-arbiter'
 import { GhostPointerService } from './ghost-pointer-service'
 import { DesktopIntentService } from './intent-service'
-import { DesktopSceneService } from './scene-service'
+import {
+  DesktopSceneService,
+  reacquireWindowInScene,
+  toObservedWindowIdentity,
+  toReacquireSelector,
+} from './scene-service'
+
+const VERIFY_FOCUS_WINDOW_RESAMPLE_DELAY_MS = 120
+const VERIFY_SET_BOUNDS_RESAMPLE_DELAY_MS = 150
+const VERIFY_SET_BOUNDS_TOLERANCE_PX = 8
 
 interface DesktopSafeLoopVerifyResult {
-  status: 'passed' | 'failed' | 'not_applicable'
+  status: 'passed' | 'failed' | 'not_applicable' | 'interrupted'
   reason: string
   details?: Record<string, unknown>
+  matchedWindowId?: string
+  targetUnavailable?: boolean
+  interruptedBy?: DesktopSafeLoopInterruptedBy
+  failureClassification?: DesktopSafeLoopFailureClassification
 }
 
 export class DesktopControlRuntime {
@@ -200,67 +216,411 @@ export class DesktopControlRuntime {
     }
   }
 
-  private verifyLoopStep(params: {
+  private isWindowTargetStep(step: DesktopActionPlanStep): step is Extract<DesktopActionPlanStep, { kind: 'focus_window' | 'move_resize_window' }> {
+    return step.kind === 'focus_window' || step.kind === 'move_resize_window'
+  }
+
+  private toStepWithWindowId(
+    step: Extract<DesktopActionPlanStep, { kind: 'focus_window' | 'move_resize_window' }>,
+    windowId: string,
+  ): Extract<DesktopActionPlanStep, { kind: 'focus_window' | 'move_resize_window' }> {
+    if (step.kind === 'focus_window') {
+      return {
+        kind: 'focus_window',
+        windowId,
+      }
+    }
+
+    return {
+      kind: 'move_resize_window',
+      windowId,
+      bounds: step.bounds,
+    }
+  }
+
+  private resolveObservedIdentityForStep(params: {
+    step: Extract<DesktopActionPlanStep, { kind: 'focus_window' | 'move_resize_window' }>
+    sceneBeforeAction: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
+    selectorCache: Map<string, DesktopWindowReacquireSelector>
+  }): {
+    observedIdentity?: DesktopObservedWindowIdentity
+    reacquireSelector: DesktopWindowReacquireSelector
+    reacquireStatus: Exclude<DesktopWindowReacquireStatus, 'not_needed'>
+    matchedWindowId?: string
+    resolvedStep?: Extract<DesktopActionPlanStep, { kind: 'focus_window' | 'move_resize_window' }>
+  } {
+    const { step, sceneBeforeAction, selectorCache } = params
+
+    const directWindow = sceneBeforeAction.windows.find(window => window.id === step.windowId)
+    const observedIdentity = directWindow ? toObservedWindowIdentity(directWindow) : undefined
+
+    const cachedSelector = selectorCache.get(step.windowId)
+    const reacquireSelector = observedIdentity
+      ? toReacquireSelector(observedIdentity)
+      : cachedSelector || { windowId: step.windowId }
+
+    const reacquire = reacquireWindowInScene(sceneBeforeAction, reacquireSelector)
+    if (!reacquire.matchedWindow) {
+      return {
+        observedIdentity,
+        reacquireSelector,
+        reacquireStatus: reacquire.status,
+      }
+    }
+
+    const matchedIdentity = toObservedWindowIdentity(reacquire.matchedWindow)
+    const refreshedSelector = toReacquireSelector(matchedIdentity)
+    selectorCache.set(step.windowId, refreshedSelector)
+
+    return {
+      observedIdentity: matchedIdentity,
+      reacquireSelector: refreshedSelector,
+      reacquireStatus: reacquire.status,
+      matchedWindowId: reacquire.matchedWindow.id,
+      resolvedStep: this.toStepWithWindowId(step, reacquire.matchedWindow.id),
+    }
+  }
+
+  private resolveVerificationWindow(params: {
+    scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
+    fallbackWindowId: string
+    reacquireSelector?: DesktopWindowReacquireSelector
+  }): {
+    ok: boolean
+    matchedWindowId?: string
+    reacquireStatus?: Exclude<DesktopWindowReacquireStatus, 'not_needed'>
+  } {
+    const { scene, fallbackWindowId, reacquireSelector } = params
+
+    if (!reacquireSelector) {
+      return {
+        ok: true,
+        matchedWindowId: fallbackWindowId,
+      }
+    }
+
+    const reacquire = reacquireWindowInScene(scene, reacquireSelector)
+    if (!reacquire.matchedWindow) {
+      return {
+        ok: false,
+        reacquireStatus: reacquire.status,
+      }
+    }
+
+    return {
+      ok: true,
+      matchedWindowId: reacquire.matchedWindow.id,
+      reacquireStatus: reacquire.status,
+    }
+  }
+
+  private verifyFocusWindowOnce(params: {
+    scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
+    expectedWindowId: string
+  }) {
+    const focusedWindow = params.scene.windows.find(window => window.focused)
+    const matched = params.scene.focusedWindowId === params.expectedWindowId || focusedWindow?.id === params.expectedWindowId
+
+    return {
+      matched,
+      details: {
+        expectedWindowId: params.expectedWindowId,
+        observedFocusedWindowId: params.scene.focusedWindowId,
+        observedFocusedWindowFromList: focusedWindow?.id,
+      },
+    }
+  }
+
+  private verifySetBoundsOnce(params: {
+    scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
+    step: Extract<DesktopActionPlanStep, { kind: 'move_resize_window' }>
+    expectedWindowId: string
+  }) {
+    const target = params.scene.windows.find(window => window.id === params.expectedWindowId)
+    if (!target) {
+      return {
+        matched: false,
+        windowMissing: true,
+        details: {
+          expectedWindowId: params.expectedWindowId,
+        },
+      }
+    }
+
+    const tolerance = VERIFY_SET_BOUNDS_TOLERANCE_PX
+    const xMatched = Math.abs(target.bounds.x - params.step.bounds.x) <= tolerance
+    const yMatched = Math.abs(target.bounds.y - params.step.bounds.y) <= tolerance
+    const widthMatched = Math.abs(target.bounds.width - params.step.bounds.width) <= tolerance
+    const heightMatched = Math.abs(target.bounds.height - params.step.bounds.height) <= tolerance
+    const matched = xMatched && yMatched && widthMatched && heightMatched
+
+    return {
+      matched,
+      windowMissing: false,
+      details: {
+        expectedBounds: params.step.bounds,
+        observedBounds: target.bounds,
+        tolerance,
+      },
+    }
+  }
+
+  private async waitBeforeVerifyResample(
+    durationMs: number,
+    scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>,
+  ) {
+    await this.actionService.runActionPlan(scene, {
+      id: `safe_loop_verify_wait_${Date.now().toString(36)}`,
+      createdAt: new Date().toISOString(),
+      steps: [{
+        kind: 'wait',
+        durationMs,
+      }],
+    })
+  }
+
+  private resolveVerifyInterruption(): DesktopSafeLoopVerifyResult | undefined {
+    if (this.arbiter.hasActiveLease('act')) {
+      return undefined
+    }
+
+    // NOTICE: verify resampling still runs inside the safe-loop critical section.
+    // If the act lease is preempted here, we must surface an interruption instead
+    // of quietly completing verification against a stale post-action scene.
+    const interruptionContext = this.resolveLeaseInterruptionContext()
+    return {
+      status: 'interrupted',
+      reason: interruptionContext.traceMessage,
+      details: {
+        interruptedBy: interruptionContext.interruptedBy,
+        failureClassification: interruptionContext.failureClassification,
+      },
+      interruptedBy: interruptionContext.interruptedBy,
+      failureClassification: interruptionContext.failureClassification,
+    }
+  }
+
+  private async verifyLoopStep(params: {
     step: DesktopActionPlanStep
     sceneAfterAction: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
-  }): DesktopSafeLoopVerifyResult {
+    reacquireSelector?: DesktopWindowReacquireSelector
+  }): Promise<DesktopSafeLoopVerifyResult> {
     const { step, sceneAfterAction } = params
 
     if (step.kind === 'focus_window') {
-      const focusedWindow = sceneAfterAction.windows.find(window => window.focused)
-      const matched = sceneAfterAction.focusedWindowId === step.windowId || focusedWindow?.id === step.windowId
-      if (!matched) {
+      const initialInterruption = this.resolveVerifyInterruption()
+      if (initialInterruption) {
+        return initialInterruption
+      }
+
+      const verifyAttempt = async (scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>) => {
+        const resolved = this.resolveVerificationWindow({
+          scene,
+          fallbackWindowId: step.windowId,
+          reacquireSelector: params.reacquireSelector,
+        })
+
+        if (!resolved.ok || !resolved.matchedWindowId) {
+          return {
+            matched: false,
+            targetUnavailable: true,
+            details: {
+              expectedWindowId: step.windowId,
+              reacquireStatus: resolved.reacquireStatus,
+            },
+          }
+        }
+
+        const focusCheck = this.verifyFocusWindowOnce({
+          scene,
+          expectedWindowId: resolved.matchedWindowId,
+        })
+
         return {
-          status: 'failed',
-          reason: 'verify_focus_window_failed',
+          matched: focusCheck.matched,
+          targetUnavailable: false,
+          matchedWindowId: resolved.matchedWindowId,
           details: {
-            expectedWindowId: step.windowId,
-            observedFocusedWindowId: sceneAfterAction.focusedWindowId,
-            observedFocusedWindowFromList: focusedWindow?.id,
+            ...focusCheck.details,
+            verifyReacquireStatus: resolved.reacquireStatus,
           },
         }
       }
 
+      const firstAttempt = await verifyAttempt(sceneAfterAction)
+      if (firstAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_focus_window_passed',
+          details: {
+            attempts: 1,
+            ...firstAttempt.details,
+          },
+          matchedWindowId: firstAttempt.matchedWindowId,
+        }
+      }
+
+      await this.waitBeforeVerifyResample(VERIFY_FOCUS_WINDOW_RESAMPLE_DELAY_MS, sceneAfterAction)
+      const interruptionAfterWait = this.resolveVerifyInterruption()
+      if (interruptionAfterWait) {
+        return interruptionAfterWait
+      }
+      const resampledScene = await this.observeScene()
+      const secondAttempt = await verifyAttempt(resampledScene)
+      if (secondAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_focus_window_passed',
+          details: {
+            attempts: 2,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+          },
+          matchedWindowId: secondAttempt.matchedWindowId,
+        }
+      }
+
+      if (firstAttempt.targetUnavailable && secondAttempt.targetUnavailable) {
+        return {
+          status: 'failed',
+          reason: 'verify_target_unavailable',
+          details: {
+            expectedWindowId: step.windowId,
+            attempts: 2,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+          },
+          targetUnavailable: true,
+        }
+      }
+
       return {
-        status: 'passed',
-        reason: 'verify_focus_window_passed',
+        status: 'failed',
+        reason: 'verify_focus_window_failed',
+        details: {
+          expectedWindowId: step.windowId,
+          attempts: 2,
+          firstAttempt: firstAttempt.details,
+          secondAttempt: secondAttempt.details,
+        },
+        matchedWindowId: secondAttempt.matchedWindowId || firstAttempt.matchedWindowId,
       }
     }
 
     if (step.kind === 'move_resize_window') {
-      const target = sceneAfterAction.windows.find(window => window.id === step.windowId)
-      if (!target) {
+      const initialInterruption = this.resolveVerifyInterruption()
+      if (initialInterruption) {
+        return initialInterruption
+      }
+
+      const verifyAttempt = async (scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>) => {
+        const resolved = this.resolveVerificationWindow({
+          scene,
+          fallbackWindowId: step.windowId,
+          reacquireSelector: params.reacquireSelector,
+        })
+
+        if (!resolved.ok || !resolved.matchedWindowId) {
+          return {
+            matched: false,
+            targetUnavailable: true,
+            details: {
+              expectedWindowId: step.windowId,
+              reacquireStatus: resolved.reacquireStatus,
+            },
+          }
+        }
+
+        const boundsCheck = this.verifySetBoundsOnce({
+          scene,
+          step,
+          expectedWindowId: resolved.matchedWindowId,
+        })
+
+        return {
+          matched: boundsCheck.matched,
+          targetUnavailable: false,
+          windowMissing: boundsCheck.windowMissing,
+          matchedWindowId: resolved.matchedWindowId,
+          details: {
+            ...boundsCheck.details,
+            verifyReacquireStatus: resolved.reacquireStatus,
+          },
+        }
+      }
+
+      const firstAttempt = await verifyAttempt(sceneAfterAction)
+      if (firstAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_set_window_bounds_passed',
+          details: {
+            attempts: 1,
+            ...firstAttempt.details,
+          },
+          matchedWindowId: firstAttempt.matchedWindowId,
+        }
+      }
+
+      await this.waitBeforeVerifyResample(VERIFY_SET_BOUNDS_RESAMPLE_DELAY_MS, sceneAfterAction)
+      const interruptionAfterWait = this.resolveVerifyInterruption()
+      if (interruptionAfterWait) {
+        return interruptionAfterWait
+      }
+      const resampledScene = await this.observeScene()
+      const secondAttempt = await verifyAttempt(resampledScene)
+
+      if (secondAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_set_window_bounds_passed',
+          details: {
+            attempts: 2,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+          },
+          matchedWindowId: secondAttempt.matchedWindowId,
+        }
+      }
+
+      if (firstAttempt.targetUnavailable && secondAttempt.targetUnavailable) {
+        return {
+          status: 'failed',
+          reason: 'verify_target_unavailable',
+          details: {
+            expectedWindowId: step.windowId,
+            attempts: 2,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+          },
+          targetUnavailable: true,
+        }
+      }
+
+      if (secondAttempt.windowMissing) {
         return {
           status: 'failed',
           reason: 'verify_set_window_bounds_window_missing',
           details: {
             expectedWindowId: step.windowId,
+            attempts: 2,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
           },
-        }
-      }
-
-      const tolerance = 4
-      const xMatched = Math.abs(target.bounds.x - step.bounds.x) <= tolerance
-      const yMatched = Math.abs(target.bounds.y - step.bounds.y) <= tolerance
-      const widthMatched = Math.abs(target.bounds.width - step.bounds.width) <= tolerance
-      const heightMatched = Math.abs(target.bounds.height - step.bounds.height) <= tolerance
-      const matched = xMatched && yMatched && widthMatched && heightMatched
-
-      if (!matched) {
-        return {
-          status: 'failed',
-          reason: 'verify_set_window_bounds_failed',
-          details: {
-            expectedBounds: step.bounds,
-            observedBounds: target.bounds,
-            tolerance,
-          },
+          matchedWindowId: secondAttempt.matchedWindowId || firstAttempt.matchedWindowId,
         }
       }
 
       return {
-        status: 'passed',
-        reason: 'verify_set_window_bounds_passed',
+        status: 'failed',
+        reason: 'verify_set_window_bounds_failed',
+        details: {
+          expectedWindowId: step.windowId,
+          attempts: 2,
+          firstAttempt: firstAttempt.details,
+          secondAttempt: secondAttempt.details,
+        },
+        matchedWindowId: secondAttempt.matchedWindowId || firstAttempt.matchedWindowId,
       }
     }
 
@@ -458,6 +818,8 @@ export class DesktopControlRuntime {
       let executedSteps = 0
       let verificationPassed = 0
       let verificationFailed = 0
+      let verificationTargetUnavailable = false
+      const windowSelectorByPlanWindowId = new Map<string, DesktopWindowReacquireSelector>()
 
       for (const [stepIndex, step] of effectiveSteps.entries()) {
         const stepCost = this.estimateLoopStepCost(step)
@@ -544,6 +906,12 @@ export class DesktopControlRuntime {
 
         const sceneBeforeAction = await this.observeScene()
         const sceneBefore = this.toSafeLoopSceneSummary(sceneBeforeAction)
+        let observedIdentity: DesktopObservedWindowIdentity | undefined
+        let reacquireSelector: DesktopWindowReacquireSelector | undefined
+        let reacquireStatus: DesktopWindowReacquireStatus = 'not_needed'
+        let matchedWindowId: string | undefined
+        let stepForAction = step
+
         appendTrace({
           phase: 'observe',
           stepIndex,
@@ -555,13 +923,95 @@ export class DesktopControlRuntime {
           },
         })
 
+        if (this.isWindowTargetStep(step)) {
+          const targetResolution = this.resolveObservedIdentityForStep({
+            step,
+            sceneBeforeAction,
+            selectorCache: windowSelectorByPlanWindowId,
+          })
+
+          observedIdentity = targetResolution.observedIdentity
+          reacquireSelector = targetResolution.reacquireSelector
+          reacquireStatus = targetResolution.reacquireStatus
+          matchedWindowId = targetResolution.matchedWindowId
+          stepForAction = targetResolution.resolvedStep || step
+
+          appendTrace({
+            phase: 'selector_recorded',
+            stepIndex,
+            stepKind: step.kind,
+            message: 'safe_loop_selector_recorded_for_window_step',
+            details: {
+              selector: reacquireSelector,
+              observedIdentity,
+            },
+          })
+
+          if (!targetResolution.resolvedStep) {
+            const targetUnavailableReason = `safe_loop_target_reacquire_${reacquireStatus}:${step.windowId}`
+            errors.push(targetUnavailableReason)
+
+            const stepResult: DesktopSafeLoopStepResult = {
+              stepIndex,
+              stepKind: step.kind,
+              startedAt: stepStartedAt,
+              finishedAt: new Date().toISOString(),
+              actionStatus: 'failed',
+              verificationStatus: 'verification_skipped',
+              stepCost,
+              remainingBudgetBeforeStep,
+              remainingBudgetAfterStep: remainingBudget,
+              reason: targetUnavailableReason,
+              sceneBefore,
+              observedIdentity,
+              reacquireSelector,
+              reacquireStatus,
+              matchedWindowId,
+            }
+            stepResults.push(stepResult)
+
+            appendTrace({
+              phase: 'target_reacquire_failed',
+              stepIndex,
+              stepKind: step.kind,
+              message: 'safe_loop_target_reacquire_failed_before_action',
+              details: {
+                selector: reacquireSelector,
+                reacquireStatus,
+                requestedWindowId: step.windowId,
+              },
+            })
+
+            return await finish('failed', {
+              executedSteps,
+              remainingBudget,
+              verificationPassed,
+              verificationFailed,
+              cappedSteps: effectiveSteps.length,
+              failureClassification: 'target_unavailable',
+            })
+          }
+
+          appendTrace({
+            phase: 'target_reacquired',
+            stepIndex,
+            stepKind: step.kind,
+            message: 'safe_loop_target_reacquired_for_window_step',
+            details: {
+              reacquireStatus,
+              matchedWindowId,
+              requestedWindowId: step.windowId,
+            },
+          })
+        }
+
         appendTrace({
           phase: 'decide',
           stepIndex,
           stepKind: step.kind,
           message: 'safe_loop_step_selected',
           details: {
-            step,
+            step: stepForAction,
             stepCost,
             remainingBudget,
           },
@@ -570,7 +1020,7 @@ export class DesktopControlRuntime {
         const actionResult = await this.actionService.runActionPlan(sceneBeforeAction, {
           id: `${runId}_step_${stepIndex}`,
           createdAt: new Date().toISOString(),
-          steps: [step],
+          steps: [stepForAction],
         }, {
           shouldContinue: () => this.arbiter.hasActiveLease('act'),
         })
@@ -603,6 +1053,10 @@ export class DesktopControlRuntime {
             remainingBudgetAfterStep: remainingBudget,
             reason: interruptionContext.traceMessage,
             sceneBefore,
+            observedIdentity,
+            reacquireSelector,
+            reacquireStatus,
+            matchedWindowId,
           }
           stepResults.push(stepResult)
 
@@ -633,6 +1087,10 @@ export class DesktopControlRuntime {
             remainingBudgetAfterStep: remainingBudget,
             reason: failureReason,
             sceneBefore,
+            observedIdentity,
+            reacquireSelector,
+            reacquireStatus,
+            matchedWindowId,
           }
           stepResults.push(stepResult)
 
@@ -651,10 +1109,66 @@ export class DesktopControlRuntime {
 
         const sceneAfterAction = await this.observeScene()
         const sceneAfter = this.toSafeLoopSceneSummary(sceneAfterAction)
-        const verification = this.verifyLoopStep({
-          step,
-          sceneAfterAction,
+        appendTrace({
+          phase: 'verify_started',
+          stepIndex,
+          stepKind: step.kind,
+          message: 'safe_loop_step_verify_started',
+          details: {
+            requestedWindowId: this.isWindowTargetStep(step) ? step.windowId : undefined,
+            matchedWindowId,
+            reacquireStatus,
+          },
         })
+
+        const verification = await this.verifyLoopStep({
+          step: stepForAction,
+          sceneAfterAction,
+          reacquireSelector,
+        })
+
+        if (verification.status === 'interrupted') {
+          errors.push(verification.reason)
+
+          const stepResult: DesktopSafeLoopStepResult = {
+            stepIndex,
+            stepKind: step.kind,
+            startedAt: stepStartedAt,
+            finishedAt: new Date().toISOString(),
+            actionStatus: 'completed',
+            verificationStatus: 'verification_skipped',
+            stepCost,
+            remainingBudgetBeforeStep,
+            remainingBudgetAfterStep: remainingBudget,
+            reason: verification.reason,
+            sceneBefore,
+            sceneAfter,
+            verificationDetails: verification.details,
+            observedIdentity,
+            reacquireSelector,
+            reacquireStatus,
+            matchedWindowId: verification.matchedWindowId || matchedWindowId,
+          }
+          stepResults.push(stepResult)
+
+          appendTrace({
+            phase: 'interrupt',
+            stepIndex,
+            stepKind: step.kind,
+            message: verification.reason,
+            details: verification.details,
+          })
+
+          return await finish('interrupted', {
+            executedSteps,
+            remainingBudget,
+            verificationPassed,
+            verificationFailed,
+            cappedSteps: effectiveSteps.length,
+            failureClassification: verification.failureClassification,
+            interruptedBy: verification.interruptedBy,
+          })
+        }
 
         const stepResult: DesktopSafeLoopStepResult = {
           stepIndex,
@@ -670,6 +1184,10 @@ export class DesktopControlRuntime {
           sceneBefore,
           sceneAfter,
           verificationDetails: verification.details,
+          observedIdentity,
+          reacquireSelector,
+          reacquireStatus,
+          matchedWindowId: verification.matchedWindowId || matchedWindowId,
         }
         stepResults.push(stepResult)
 
@@ -681,9 +1199,22 @@ export class DesktopControlRuntime {
           details: verification.details,
         })
 
+        appendTrace({
+          phase: verification.status === 'passed'
+            ? 'verify_passed'
+            : verification.status === 'failed'
+              ? 'verify_failed'
+              : 'verify',
+          stepIndex,
+          stepKind: step.kind,
+          message: verification.reason,
+          details: verification.details,
+        })
+
         if (verification.status === 'failed') {
           verificationFailed += 1
           errors.push(verification.reason)
+          verificationTargetUnavailable = verificationTargetUnavailable || verification.targetUnavailable === true
           if (stopOnVerificationFailure) {
             return await finish('failed', {
               executedSteps,
@@ -691,7 +1222,7 @@ export class DesktopControlRuntime {
               verificationPassed,
               verificationFailed,
               cappedSteps: effectiveSteps.length,
-              failureClassification: 'verification_failed',
+              failureClassification: verification.targetUnavailable ? 'target_unavailable' : 'verification_failed',
             })
           }
         }
@@ -707,7 +1238,7 @@ export class DesktopControlRuntime {
           verificationPassed,
           verificationFailed,
           cappedSteps: effectiveSteps.length,
-          failureClassification: 'verification_failed',
+          failureClassification: verificationTargetUnavailable ? 'target_unavailable' : 'verification_failed',
         })
       }
 

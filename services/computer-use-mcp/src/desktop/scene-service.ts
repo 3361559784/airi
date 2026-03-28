@@ -1,5 +1,16 @@
 import type { DesktopExecutor } from '../types'
-import type { DesktopScene, WindowNode } from './types'
+import type {
+  DesktopObservedWindowIdentity,
+  DesktopScene,
+  DesktopWindowReacquireSelector,
+  DesktopWindowReacquireStatus,
+  WindowNode,
+} from './types'
+
+export interface DesktopWindowReacquireResult {
+  status: Exclude<DesktopWindowReacquireStatus, 'not_needed'>
+  matchedWindow?: WindowNode
+}
 
 function fallbackBounds() {
   return {
@@ -28,6 +39,92 @@ function findScreenId(
   })
 
   return matched?.id || screens[0]?.id || 'screen:unknown'
+}
+
+function hasNonEmptyTitle(title: string | undefined) {
+  return Boolean(title && title.trim().length > 0)
+}
+
+export function toObservedWindowIdentity(window: WindowNode): DesktopObservedWindowIdentity {
+  return {
+    windowId: window.id,
+    windowNumber: window.windowNumber,
+    ownerPid: window.ownerPid,
+    appName: window.appName,
+    title: window.title,
+    bounds: window.bounds,
+  }
+}
+
+export function toReacquireSelector(identity: DesktopObservedWindowIdentity): DesktopWindowReacquireSelector {
+  const hasFallbackAppTitle = hasNonEmptyTitle(identity.title)
+  return {
+    windowId: identity.windowId,
+    windowNumber: identity.windowNumber,
+    ownerPid: identity.ownerPid,
+    appName: hasFallbackAppTitle ? identity.appName : undefined,
+    title: hasFallbackAppTitle ? identity.title : undefined,
+  }
+}
+
+export function reacquireWindowInScene(scene: DesktopScene, selector: DesktopWindowReacquireSelector): DesktopWindowReacquireResult {
+  if (selector.windowId) {
+    const matches = scene.windows.filter(window => window.id === selector.windowId)
+    if (matches.length === 1) {
+      return {
+        status: 'matched_by_window_id',
+        matchedWindow: matches[0],
+      }
+    }
+    if (matches.length > 1) {
+      return {
+        status: 'ambiguous',
+      }
+    }
+  }
+
+  if (Number.isFinite(selector.windowNumber) && Number.isFinite(selector.ownerPid)) {
+    const windowNumber = Number(selector.windowNumber)
+    const ownerPid = Number(selector.ownerPid)
+    const matches = scene.windows.filter(window => window.windowNumber === windowNumber && window.ownerPid === ownerPid)
+    if (matches.length === 1) {
+      return {
+        status: 'matched_by_window_number_pid',
+        matchedWindow: matches[0],
+      }
+    }
+    if (matches.length > 1) {
+      return {
+        status: 'ambiguous',
+      }
+    }
+  }
+
+  const appName = selector.appName
+  const title = selector.title
+  if (!appName || !hasNonEmptyTitle(title)) {
+    return {
+      status: 'not_found',
+    }
+  }
+
+  const matches = scene.windows.filter(window => window.appName === appName && window.title === title)
+  if (matches.length === 0) {
+    return {
+      status: 'not_found',
+    }
+  }
+
+  if (matches.length === 1) {
+    return {
+      status: 'matched_by_app_title',
+      matchedWindow: matches[0],
+    }
+  }
+
+  return {
+    status: 'ambiguous',
+  }
 }
 
 export class DesktopSceneService {

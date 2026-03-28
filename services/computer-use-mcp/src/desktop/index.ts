@@ -7,6 +7,7 @@ export { DesktopSceneService } from './scene-service'
 export type {
   ControlLease,
   ControlLeaseKind,
+  DesktopObservedWindowIdentity,
   DesktopActionPlan,
   DesktopActionPlanResult,
   DesktopActionPlanStep,
@@ -24,6 +25,8 @@ export type {
   DesktopSafeLoopTraceEntry,
   DesktopSafeLoopVerificationSummary,
   DesktopScene,
+  DesktopWindowReacquireSelector,
+  DesktopWindowReacquireStatus,
   GhostPointerState,
   LayoutPresetId,
   LayoutPreview,
