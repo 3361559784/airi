@@ -97,6 +97,10 @@ export type DesktopActionPlanStep
     app: string
   }
   | {
+    kind: 'open_app'
+    app: string
+  }
+  | {
     kind: 'focus_window'
     windowId: string
   }

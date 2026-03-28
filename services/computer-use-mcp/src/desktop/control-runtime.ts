@@ -30,6 +30,8 @@ import {
 const VERIFY_FOCUS_WINDOW_RESAMPLE_DELAY_MS = 120
 const VERIFY_SET_BOUNDS_RESAMPLE_DELAY_MS = 150
 const VERIFY_SET_BOUNDS_TOLERANCE_PX = 8
+const VERIFY_OPEN_APP_RESAMPLE_DELAY_MS = 250
+const VERIFY_OPEN_APP_FINAL_RESAMPLE_DELAY_MS = 750
 
 interface DesktopSafeLoopVerifyResult {
   status: 'passed' | 'failed' | 'not_applicable' | 'interrupted'
@@ -198,6 +200,7 @@ export class DesktopControlRuntime {
 
   private estimateLoopStepCost(step: DesktopActionPlanStep) {
     switch (step.kind) {
+      case 'open_app':
       case 'focus_app':
       case 'focus_window':
       case 'move_resize_window':
@@ -347,6 +350,28 @@ export class DesktopControlRuntime {
     }
   }
 
+  private verifyOpenAppOnce(params: {
+    scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
+    expectedApp: string
+  }) {
+    const windowCountForApp = params.scene.windows.filter(window => window.appName === params.expectedApp).length
+    const matchedBy = params.scene.focusedApp === params.expectedApp
+      ? 'focused_app'
+      : windowCountForApp > 0
+        ? 'visible_window'
+        : 'none'
+
+    return {
+      matched: matchedBy !== 'none',
+      details: {
+        expectedApp: params.expectedApp,
+        matchedBy,
+        windowCountForApp,
+        observedFocusedApp: params.scene.focusedApp,
+      },
+    }
+  }
+
   private verifySetBoundsOnce(params: {
     scene: Awaited<ReturnType<DesktopControlRuntime['observeScene']>>
     step: Extract<DesktopActionPlanStep, { kind: 'move_resize_window' }>
@@ -422,6 +447,98 @@ export class DesktopControlRuntime {
     reacquireSelector?: DesktopWindowReacquireSelector
   }): Promise<DesktopSafeLoopVerifyResult> {
     const { step, sceneAfterAction } = params
+
+    if (step.kind === 'open_app') {
+      const initialInterruption = this.resolveVerifyInterruption()
+      if (initialInterruption) {
+        return initialInterruption
+      }
+
+      const firstAttempt = this.verifyOpenAppOnce({
+        scene: sceneAfterAction,
+        expectedApp: step.app,
+      })
+      if (firstAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_open_app_passed',
+          details: {
+            expectedApp: step.app,
+            attempts: 1,
+            matchedBy: firstAttempt.details.matchedBy,
+            windowCountForApp: firstAttempt.details.windowCountForApp,
+            firstAttempt: firstAttempt.details,
+          },
+        }
+      }
+
+      await this.waitBeforeVerifyResample(VERIFY_OPEN_APP_RESAMPLE_DELAY_MS, sceneAfterAction)
+      const interruptionAfterFirstWait = this.resolveVerifyInterruption()
+      if (interruptionAfterFirstWait) {
+        return interruptionAfterFirstWait
+      }
+
+      const secondScene = await this.observeScene()
+      const secondAttempt = this.verifyOpenAppOnce({
+        scene: secondScene,
+        expectedApp: step.app,
+      })
+      if (secondAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_open_app_passed',
+          details: {
+            expectedApp: step.app,
+            attempts: 2,
+            matchedBy: secondAttempt.details.matchedBy,
+            windowCountForApp: secondAttempt.details.windowCountForApp,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+          },
+        }
+      }
+
+      await this.waitBeforeVerifyResample(VERIFY_OPEN_APP_FINAL_RESAMPLE_DELAY_MS, secondScene)
+      const interruptionAfterSecondWait = this.resolveVerifyInterruption()
+      if (interruptionAfterSecondWait) {
+        return interruptionAfterSecondWait
+      }
+
+      const thirdScene = await this.observeScene()
+      const thirdAttempt = this.verifyOpenAppOnce({
+        scene: thirdScene,
+        expectedApp: step.app,
+      })
+      if (thirdAttempt.matched) {
+        return {
+          status: 'passed',
+          reason: 'verify_open_app_passed',
+          details: {
+            expectedApp: step.app,
+            attempts: 3,
+            matchedBy: thirdAttempt.details.matchedBy,
+            windowCountForApp: thirdAttempt.details.windowCountForApp,
+            firstAttempt: firstAttempt.details,
+            secondAttempt: secondAttempt.details,
+            thirdAttempt: thirdAttempt.details,
+          },
+        }
+      }
+
+      return {
+        status: 'failed',
+        reason: 'verify_open_app_failed',
+        details: {
+          expectedApp: step.app,
+          attempts: 3,
+          matchedBy: 'none',
+          windowCountForApp: thirdAttempt.details.windowCountForApp,
+          firstAttempt: firstAttempt.details,
+          secondAttempt: secondAttempt.details,
+          thirdAttempt: thirdAttempt.details,
+        },
+      }
+    }
 
     if (step.kind === 'focus_app') {
       const initialInterruption = this.resolveVerifyInterruption()
@@ -1187,7 +1304,7 @@ export class DesktopControlRuntime {
           stepKind: step.kind,
           message: 'safe_loop_step_verify_started',
           details: {
-            requestedApp: step.kind === 'focus_app' ? step.app : undefined,
+            requestedApp: step.kind === 'focus_app' || step.kind === 'open_app' ? step.app : undefined,
             requestedWindowId: this.isWindowTargetStep(step) ? step.windowId : undefined,
             matchedWindowId,
             reacquireStatus,

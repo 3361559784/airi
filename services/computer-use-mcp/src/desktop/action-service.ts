@@ -24,6 +24,18 @@ export type MoveResizeWindowResult
     notice: string
   }
 
+export type OpenAppResult
+  = | {
+    status: 'completed'
+    reason: string
+    app: string
+  }
+  | {
+    status: 'failed'
+    reason: string
+    detail?: CallToolResult
+  }
+
 const SEMANTIC_ACTION_RETRY_DELAY_MS = 120
 const SEMANTIC_ACTION_MAX_ATTEMPTS = 2
 
@@ -50,7 +62,15 @@ function isUnsupportedSemanticError(text: string) {
 }
 
 async function sleep(ms: number) {
-  await new Promise(resolve => setTimeout(resolve, Math.max(0, ms)))
+  await new Promise<void>((resolve) => {
+    const timer = (globalThis as { setTimeout?: (callback: () => void, timeout?: number) => unknown }).setTimeout
+    if (typeof timer !== 'function') {
+      resolve()
+      return
+    }
+
+    timer(resolve, Math.max(0, ms))
+  })
 }
 
 export class DesktopActionService {
@@ -165,6 +185,32 @@ export class DesktopActionService {
     }
   }
 
+  async openApp(app: string): Promise<OpenAppResult> {
+    const openAttempt = await this.executeSemanticActionWithRetry({
+      kind: 'open_app',
+      input: { app },
+    }, 'desktop_open_app')
+
+    const openResult = openAttempt.result
+    const openErrorText = openAttempt.errorText
+
+    if (!openAttempt.ok) {
+      return {
+        status: 'failed' as const,
+        reason: isUnsupportedSemanticError(openErrorText)
+          ? `open_app_unsupported:${app}`
+          : `open_app_failed:${app}`,
+        detail: openResult,
+      }
+    }
+
+    return {
+      status: 'completed' as const,
+      reason: 'open_app_requested',
+      app,
+    }
+  }
+
   async moveResizeWindow(scene: DesktopScene, windowId: string, bounds: { x: number, y: number, width: number, height: number }): Promise<MoveResizeWindowResult> {
     const target = scene.windows.find(window => window.id === windowId)
     if (!target) {
@@ -236,6 +282,24 @@ export class DesktopActionService {
       }
 
       switch (step.kind) {
+        case 'open_app': {
+          const result = await this.openApp(step.app)
+          details.push({
+            step,
+            result,
+          })
+          if (result.status !== 'completed') {
+            errors.push(result.reason)
+            return {
+              status: 'failed',
+              executedSteps,
+              errors,
+              details,
+            }
+          }
+          executedSteps += 1
+          break
+        }
         case 'focus_app': {
           const result = await this.focusApp(step.app)
           details.push({

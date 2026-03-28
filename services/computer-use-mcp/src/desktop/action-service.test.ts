@@ -40,6 +40,33 @@ function success(actionKind: string): CallToolResult {
 }
 
 describe('desktopActionService', () => {
+  it('retries open_app once on transient launch failure', async () => {
+    let callCount = 0
+    const executeAction = vi.fn(async (action) => {
+      callCount += 1
+      if (callCount === 1) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'open_app transient failure' }],
+        } satisfies CallToolResult
+      }
+
+      return success(action.kind)
+    }) as unknown as ExecuteAction
+
+    const service = new DesktopActionService(executeAction)
+    const result = await service.openApp('Terminal')
+
+    expect(result.status).toBe('completed')
+    expect(executeAction).toHaveBeenCalledTimes(2)
+    expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'open_app',
+      input: { app: 'Terminal' },
+    }), 'desktop_open_app', expect.objectContaining({
+      skipApprovalQueue: true,
+    }))
+  })
+
   it('retries focus_app once on transient semantic failure', async () => {
     let callCount = 0
     const executeAction = vi.fn(async (action) => {
@@ -224,5 +251,29 @@ describe('desktopActionService', () => {
     expect(result.status).toBe('completed')
     expect(result.executedSteps).toBe(1)
     expect(result.errors).toEqual([])
+  })
+
+  it('runs open_app as part of a desktop action plan', async () => {
+    const executeAction = vi.fn(async action => success(action.kind)) as unknown as ExecuteAction
+    const service = new DesktopActionService(executeAction)
+
+    const result = await service.runActionPlan(createScene(), {
+      id: 'p-open-app',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      steps: [{
+        kind: 'open_app',
+        app: 'Terminal',
+      }],
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.executedSteps).toBe(1)
+    expect(result.errors).toEqual([])
+    expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'open_app',
+      input: { app: 'Terminal' },
+    }), 'desktop_open_app', expect.objectContaining({
+      skipApprovalQueue: true,
+    }))
   })
 })

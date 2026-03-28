@@ -144,6 +144,9 @@ async function main() {
     if (executionTarget?.mode !== 'local-windowed') {
       throw new Error(`desktop_get_capabilities expected local-windowed target, got ${String(executionTarget?.mode)}`)
     }
+    const supportedAppsForOpenFocus = Array.isArray(capabilities.supportedAppsForOpenFocus)
+      ? capabilities.supportedAppsForOpenFocus.map(item => String(item))
+      : []
 
     const sceneRaw = await client.callTool({
       name: 'desktop_observe_scene',
@@ -225,6 +228,65 @@ async function main() {
       }
     }
 
+    const requestedOpenAppTarget = env.COMPUTER_USE_SMOKE_OPEN_APP_TARGET?.trim()
+    const openAppTarget = requestedOpenAppTarget
+      ? supportedAppsForOpenFocus.includes(requestedOpenAppTarget)
+        ? requestedOpenAppTarget
+        : undefined
+      : focusedApp && supportedAppsForOpenFocus.includes(focusedApp)
+        ? focusedApp
+        : undefined
+    let openAppRun: Record<string, unknown> | undefined
+
+    if (openAppTarget) {
+      const openAppRunRaw = await client.callTool({
+        name: 'desktop_run_safe_agent_loop',
+        arguments: {
+          objective: 'v3 safe loop open app smoke',
+          plan: [{ kind: 'open_app', app: openAppTarget }],
+          maxSteps: 1,
+          actionBudget: 4,
+          stopOnVerificationFailure: true,
+        },
+      })
+      openAppRun = requireStructuredContent(openAppRunRaw, 'desktop_run_safe_agent_loop open_app')
+      if (openAppRun.status !== 'ok' || openAppRun.safeLoopStatus !== 'succeeded') {
+        throw new Error(`desktop_run_safe_agent_loop open_app expected ok/succeeded, got status=${String(openAppRun.status)} safeLoopStatus=${String(openAppRun.safeLoopStatus)}`)
+      }
+
+      const openAppStepResults = Array.isArray(openAppRun.stepResults) ? openAppRun.stepResults as Array<Record<string, unknown>> : []
+      if (openAppStepResults.length === 0) {
+        throw new Error('desktop_run_safe_agent_loop open_app expected non-empty stepResults')
+      }
+
+      const openAppVerification = openAppStepResults[0]?.verificationDetails
+      if (!openAppVerification || typeof openAppVerification !== 'object') {
+        throw new Error('desktop_run_safe_agent_loop open_app expected verificationDetails object')
+      }
+
+      const expectedApp = (openAppVerification as Record<string, unknown>).expectedApp
+      const attempts = (openAppVerification as Record<string, unknown>).attempts
+      const matchedBy = String((openAppVerification as Record<string, unknown>).matchedBy || '')
+      const windowCountForApp = (openAppVerification as Record<string, unknown>).windowCountForApp
+
+      if (String(expectedApp) !== openAppTarget) {
+        throw new Error(`desktop_run_safe_agent_loop open_app expected verificationDetails.expectedApp=${openAppTarget}, got ${String(expectedApp)}`)
+      }
+
+      if (!Number.isFinite(Number(attempts)) || Number(attempts) < 1 || Number(attempts) > 3) {
+        throw new Error(`desktop_run_safe_agent_loop open_app expected attempts in [1,3], got ${String(attempts)}`)
+      }
+
+      if (!['focused_app', 'visible_window', 'none'].includes(matchedBy)) {
+        throw new Error(`desktop_run_safe_agent_loop open_app expected matchedBy to be focused_app|visible_window|none, got ${matchedBy}`)
+      }
+
+      if (!Number.isFinite(Number(windowCountForApp)) || Number(windowCountForApp) < 0) {
+        throw new Error(`desktop_run_safe_agent_loop open_app expected non-negative windowCountForApp, got ${String(windowCountForApp)}`)
+      }
+
+    }
+
     const traceRaw = await client.callTool({
       name: 'desktop_get_safe_loop_trace',
       arguments: { limit: 5 },
@@ -281,9 +343,12 @@ async function main() {
         screenshot,
         lease,
         observedWindowCount: windows.length,
+        supportedAppsForOpenFocus,
         focusedApp,
         focusedWindowId,
         run,
+        openAppTarget,
+        openAppRun,
         appRun,
         traceCount: runs.length,
         interrupt,
