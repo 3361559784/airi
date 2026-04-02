@@ -12,6 +12,13 @@ import type { ToolDescriptor } from './types'
 
 import { globalRegistry } from './registry'
 
+type ToolRegistrationFn = (
+  canonicalName: string,
+  description: string,
+  schema: unknown,
+  handler: DescriptorAwareHandler,
+) => unknown
+
 /**
  * Options for descriptor-driven tool registration.
  */
@@ -53,12 +60,72 @@ export function registerToolWithDescriptor<TSchema extends ZodRawShape>(
   // Register with MCP server
   // The description comes from the descriptor's summary
   // Note: Need to cast to any due to complex MCP SDK types
-  (server.tool as Function)(
+  const register = server.tool as unknown as ToolRegistrationFn
+
+  register(
     descriptor.canonicalName,
     descriptor.summary,
     schema,
-    handler,
+    handler as DescriptorAwareHandler,
   )
+}
+
+type DescriptorAwareHandler = (...args: unknown[]) => unknown
+
+function normalizeRegistrationArgs(args: unknown[]): {
+  schema: unknown
+  handler: DescriptorAwareHandler
+} {
+  if (args.length === 2) {
+    return {
+      schema: args[0],
+      handler: args[1] as DescriptorAwareHandler,
+    }
+  }
+
+  if (args.length === 3 && typeof args[0] === 'string') {
+    return {
+      schema: args[1],
+      handler: args[2] as DescriptorAwareHandler,
+    }
+  }
+
+  throw new Error(`Unsupported tool registration signature. Expected (name, schema, handler) or (name, description, schema, handler); received ${args.length + 1} arguments.`)
+}
+
+/**
+ * Create a descriptor-aware tool registrar.
+ *
+ * This lets existing register-* modules keep their current `server.tool(...)`
+ * shape while forcing every registration through the descriptor registry.
+ */
+export function createDescriptorAwareToolRegistrar(server: McpServer) {
+  return (canonicalName: string, ...args: unknown[]) => {
+    const descriptor = requireDescriptor(canonicalName)
+    const { schema, handler } = normalizeRegistrationArgs(args)
+
+    const register = server.tool as unknown as ToolRegistrationFn
+
+    register(
+      descriptor.canonicalName,
+      descriptor.summary,
+      schema,
+      handler,
+    )
+  }
+}
+
+/**
+ * Create a lightweight registration-only server facade whose `tool(...)`
+ * method always resolves tool metadata from the descriptor registry.
+ *
+ * NOTICE: This facade is only intended for the registration phase. It is not a
+ * general-purpose McpServer replacement and should not be used for connect/run.
+ */
+export function createDescriptorAwareServer(server: McpServer): McpServer {
+  return Object.assign(Object.create(server), {
+    tool: createDescriptorAwareToolRegistrar(server),
+  }) as McpServer
 }
 
 /**

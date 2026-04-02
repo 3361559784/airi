@@ -74,10 +74,9 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/node": "^22.16.2",
+    "@types/node": "^24.10.14",
     "@types/ws": "catalog:",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.29.0",
     "vitest": "catalog:vitest"
   }
 }

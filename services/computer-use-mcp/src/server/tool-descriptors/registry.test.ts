@@ -2,6 +2,11 @@
  * Tool Descriptor Registry Tests
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -12,6 +17,25 @@ import {
   initializeGlobalRegistry,
 } from './index'
 import { validateDescriptor } from './types'
+
+function extractRegisteredToolNames() {
+  const serverDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+  const registerFiles = fs.readdirSync(serverDir)
+    .filter(name => name.startsWith('register-') && name.endsWith('.ts') && !name.endsWith('.test.ts'))
+
+  const names = new Set<string>()
+  const registrationPattern = /server\.tool\(\s*'([^']+)'/g
+
+  for (const fileName of registerFiles) {
+    const text = fs.readFileSync(path.join(serverDir, fileName), 'utf8')
+    let match: RegExpExecArray | null
+    while ((match = registrationPattern.exec(text))) {
+      names.add(match[1])
+    }
+  }
+
+  return Array.from(names).sort()
+}
 
 describe('toolDescriptorRegistry', () => {
   describe('registry initialization', () => {
@@ -152,6 +176,20 @@ describe('toolDescriptorRegistry', () => {
       const results = globalRegistry.query({ lane: 'desktop' })
 
       expect(results.length).toBeGreaterThan(0)
+    })
+
+    it('should cover every registered tool name in the server modules', () => {
+      initializeGlobalRegistry()
+      const registeredToolNames = extractRegisteredToolNames()
+
+      expect(globalRegistry.validateCompleteness(registeredToolNames)).toEqual([])
+    })
+
+    it('should not expose public orphan descriptors that are not actually registered', () => {
+      const registeredToolNames = extractRegisteredToolNames()
+      const publicDescriptorNames = allDescriptors.map(descriptor => descriptor.canonicalName).sort()
+
+      expect(publicDescriptorNames.filter(name => !registeredToolNames.includes(name))).toEqual([])
     })
   })
 

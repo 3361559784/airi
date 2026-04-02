@@ -37,6 +37,14 @@ export {
   taskMemoryDescriptors,
   vscodeDescriptors,
 } from './all'
+export {
+  createDescriptorAwareServer,
+  createDescriptorAwareToolRegistrar,
+  getToolSummary,
+  registerToolWithDescriptor,
+  requireDescriptor,
+  validateToolsHaveDescriptors,
+} from './register-helper'
 // Registry
 export type { ToolQueryOptions } from './registry'
 

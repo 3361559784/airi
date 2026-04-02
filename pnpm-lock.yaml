@@ -3240,6 +3240,37 @@ importers:
         specifier: ^0.20.18
         version: 0.20.18(@types/node@24.10.14)(canvas@3.2.1)(eslint@9.39.3(jiti@2.6.1))(jiti@2.6.1)(less@4.5.1)(lightningcss@1.31.1)(rollup@4.59.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
 
+  services/computer-use-mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: 'catalog:'
+        version: 1.27.1(@cfworker/json-schema@4.1.1)(zod@4.3.6)
+      '@moeru/std':
+        specifier: 'catalog:'
+        version: 0.1.0-beta.17
+      node-pty:
+        specifier: ^1.0.0
+        version: 1.1.0
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.14
+        version: 24.10.14
+      '@types/ws':
+        specifier: 'catalog:'
+        version: 8.18.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: catalog:vitest
+        version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@24.10.14)(@vitest/browser-playwright@4.0.18)(jiti@2.6.1)(jsdom@27.4.0(bufferutil@4.1.0)(canvas@3.2.1)(utf-8-validate@5.0.10))(less@4.5.1)(lightningcss@1.31.1)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+
   services/discord-bot:
     dependencies:
       '@discordjs/voice':
@@ -13847,6 +13878,9 @@ packages:
 
   node-notifier@10.0.1:
     resolution: {integrity: sha512-YX7TSyDukOZ0g+gmzjB6abKu+hTGvO8+8+gIFDsRCU2t8fLV/P2unmt+LGFaIa4y64aX98Qksa97rgz4vMNeLQ==}
+
+  node-pty@1.1.0:
+    resolution: {integrity: sha512-20JqtutY6JPXTUnL0ij1uad7Qe1baT46lyolh2sSENDd4sTzKZ4nmAFkeAARDKwmlLjPx6XKRlwRUxwjOy+lUg==}
 
   node-releases@2.0.27:
     resolution: {integrity: sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==}
@@ -28722,6 +28756,10 @@ snapshots:
       shellwords: 0.1.1
       uuid: 8.3.2
       which: 2.0.2
+
+  node-pty@1.1.0:
+    dependencies:
+      node-addon-api: 7.1.1
 
   node-releases@2.0.27: {}
 

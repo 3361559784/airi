@@ -16,7 +16,7 @@ import { registerToolDirectory } from './server/register-tool-directory'
 import { registerComputerUseTools } from './server/register-tools'
 import { registerVscodeTools } from './server/register-vscode'
 import { createRuntime } from './server/runtime'
-import { initializeGlobalRegistry } from './server/tool-descriptors'
+import { createDescriptorAwareServer, initializeGlobalRegistry } from './server/tool-descriptors'
 
 const packageVersion = '0.1.0'
 const enableTestTools = ['1', 'true', 'yes', 'on'].includes((env.COMPUTER_USE_ENABLE_TEST_TOOLS || '').trim().toLowerCase())
@@ -33,30 +33,31 @@ export async function createComputerUseMcpServer(config = resolveComputerUseConf
     name: 'AIRI Computer Use',
     version: packageVersion,
   })
+  const registrationServer = createDescriptorAwareServer(server)
 
   // Register the tool directory first (meta-tool for introspection)
-  registerToolDirectory({ server })
+  registerToolDirectory({ server: registrationServer })
 
   registerComputerUseTools({
-    server,
+    server: registrationServer,
     runtime,
     executeAction,
     enableTestTools,
   })
 
-  registerTaskMemoryTools(server, runtime)
+  registerTaskMemoryTools(registrationServer, runtime)
 
-  registerAccessibilityTools({ server, runtime })
-  registerDisplayTools({ server, runtime })
-  registerPtyTools({ server, runtime })
+  registerAccessibilityTools({ server: registrationServer, runtime })
+  registerDisplayTools({ server: registrationServer, runtime })
+  registerPtyTools({ server: registrationServer, runtime })
   registerVscodeTools({
-    server,
+    server: registrationServer,
     runtime,
     executeTerminalCommand: async (input, toolName) => {
       return await executeAction({ kind: 'terminal_exec', input }, toolName)
     },
   })
-  const cdpCleanup = registerCdpTools({ server, runtime })
+  const cdpCleanup = registerCdpTools({ server: registrationServer, runtime })
 
   return {
     server,

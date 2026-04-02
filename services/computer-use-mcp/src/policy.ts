@@ -20,11 +20,41 @@ function getDescriptorBaseline(actionKind: string): {
   destructive: boolean
   requiresApprovalByDefault: boolean
 } | undefined {
-  // Map action kinds to tool names (some are 1:1, some need mapping)
-  const toolName = actionKind
+  const actionKindToToolName: Partial<Record<ActionInvocation['kind'], string>> = {
+    screenshot: 'desktop_screenshot',
+    observe_windows: 'desktop_observe_windows',
+    open_app: 'desktop_open_app',
+    focus_app: 'desktop_focus_app',
+    click: 'desktop_click',
+    type_text: 'desktop_type_text',
+    press_keys: 'desktop_press_keys',
+    scroll: 'desktop_scroll',
+    wait: 'desktop_wait',
+    terminal_exec: 'terminal_exec',
+    terminal_reset: 'terminal_reset_state',
+    clipboard_read_text: 'clipboard_read_text',
+    clipboard_write_text: 'clipboard_write_text',
+    secret_read_env_value: 'secret_read_env_value',
+    coding_review_workspace: 'coding_review_workspace',
+    coding_read_file: 'coding_read_file',
+    coding_search_text: 'coding_search_text',
+    coding_search_symbol: 'coding_search_symbol',
+    coding_find_references: 'coding_find_references',
+    coding_select_target: 'coding_select_target',
+    coding_plan_changes: 'coding_plan_changes',
+    coding_analyze_impact: 'coding_analyze_impact',
+    coding_validate_hypothesis: 'coding_validate_hypothesis',
+    coding_diagnose_changes: 'coding_diagnose_changes',
+    coding_capture_validation_baseline: 'coding_capture_validation_baseline',
+    coding_review_changes: 'coding_review_changes',
+    coding_apply_patch: 'coding_apply_patch',
+    coding_compress_context: 'coding_compress_context',
+    coding_report_status: 'coding_report_status',
+  }
+  const toolName = actionKindToToolName[actionKind]
 
   // Check if the tool exists in the registry
-  if (!globalRegistry.has(toolName)) {
+  if (!toolName || !globalRegistry.has(toolName)) {
     return undefined
   }
 
