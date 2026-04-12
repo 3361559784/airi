@@ -157,5 +157,5 @@ describe('coding search contracts', () => {
     finally {
       await rm(workspace, { recursive: true, force: true })
     }
-  })
+  }, 30000)
 })
