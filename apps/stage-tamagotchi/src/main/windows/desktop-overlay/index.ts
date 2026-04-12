@@ -56,16 +56,17 @@ export async function setupDesktopOverlayWindow(params: {
     return null
   }
 
-  // Use primary display dimensions for full-screen coverage
+  // Use primary display bounds (not just size) — the origin may be non-zero
+  // when multiple displays are arranged in macOS Display Preferences.
   const primaryDisplay = screen.getPrimaryDisplay()
-  const { width, height } = primaryDisplay.size
+  const { x, y, width, height } = primaryDisplay.bounds
 
   overlayWindow = new BrowserWindow({
     title: 'AIRI Desktop Overlay',
     width,
     height,
-    x: 0,
-    y: 0,
+    x,
+    y,
     show: false,
     frame: false,
     transparent: true,

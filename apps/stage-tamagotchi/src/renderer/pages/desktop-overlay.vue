@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { Rect } from './desktop-overlay-coordinates'
 /**
  * Desktop Overlay — transparent fullscreen overlay for ghost pointer visualization.
  *
@@ -10,14 +11,25 @@
  * - Stale indicators when grounding snapshot is outdated
  *
  * Core logic lives in desktop-overlay-polling.ts (testable without DOM).
- * This component is a thin reactive shell over that module.
+ * Coordinate mapping lives in desktop-overlay-coordinates.ts (testable without DOM).
+ * This component is a thin reactive shell over those modules.
  */
 import type { OverlayState } from './desktop-overlay-polling'
 
+import { electron } from '@proj-airi/electron-eventa'
+import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { getMcpToolBridge } from '@proj-airi/stage-ui/stores/mcp-tool-bridge'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
+import { pointInOverlay, rectIntersectsOverlay, screenRectToLocal, screenToLocal } from './desktop-overlay-coordinates'
 import { createEmptyOverlayState, createOverlayPollController } from './desktop-overlay-polling'
+
+// ---------------------------------------------------------------------------
+// Overlay window bounds — read once on mount from main process
+// ---------------------------------------------------------------------------
+
+const getWindowBounds = useElectronEventaInvoke(electron.window.getBounds)
+const overlayBounds = ref<Rect | null>(null)
 
 // ---------------------------------------------------------------------------
 // Reactive state — single ref driven by poll controller
@@ -25,7 +37,19 @@ import { createEmptyOverlayState, createOverlayPollController } from './desktop-
 
 const state = ref<OverlayState>(createEmptyOverlayState())
 
-const candidates = computed(() => state.value.candidates)
+// Filtered & mapped candidates: only those intersecting the overlay, with local coords
+const visibleCandidates = computed(() => {
+  if (!overlayBounds.value || !state.value.hasSnapshot)
+    return []
+  const ob = overlayBounds.value
+  return state.value.candidates
+    .filter(c => rectIntersectsOverlay(c.bounds, ob))
+    .map(c => ({
+      ...c,
+      localBounds: screenRectToLocal(c.bounds, ob),
+    }))
+})
+
 const pointerIntent = computed(() => state.value.pointerIntent)
 const hasSnapshot = computed(() => state.value.hasSnapshot)
 const isStale = computed(() =>
@@ -38,7 +62,7 @@ const isStale = computed(() =>
 const matchedCandidate = computed(() => {
   if (!pointerIntent.value?.candidateId)
     return null
-  return candidates.value.find(c => c.id === pointerIntent.value!.candidateId) ?? null
+  return visibleCandidates.value.find(c => c.id === pointerIntent.value!.candidateId) ?? null
 })
 
 // ---------------------------------------------------------------------------
@@ -75,13 +99,17 @@ function sourceColor(source: string): string {
 }
 
 const pointerStyle = computed(() => {
-  if (!pointerIntent.value)
+  if (!pointerIntent.value || !overlayBounds.value)
     return { display: 'none' }
-  const { snappedPoint, mode } = pointerIntent.value
-  const isExecute = mode === 'execute'
+  const ob = overlayBounds.value
+  const screenPoint = pointerIntent.value.snappedPoint
+  if (!pointInOverlay(screenPoint, ob))
+    return { display: 'none' }
+  const local = screenToLocal(screenPoint, ob)
+  const isExecute = pointerIntent.value.mode === 'execute'
   return {
-    left: `${snappedPoint.x - 8}px`,
-    top: `${snappedPoint.y - 8}px`,
+    left: `${local.x - 8}px`,
+    top: `${local.y - 8}px`,
     display: 'block',
     backgroundColor: isExecute ? '#ef4444' : '#3b82f6',
     boxShadow: isExecute
@@ -93,12 +121,12 @@ const pointerStyle = computed(() => {
 const targetBoxStyle = computed(() => {
   if (!matchedCandidate.value)
     return { display: 'none' }
-  const { bounds } = matchedCandidate.value
+  const { localBounds } = matchedCandidate.value
   return {
-    left: `${bounds.x}px`,
-    top: `${bounds.y}px`,
-    width: `${bounds.width}px`,
-    height: `${bounds.height}px`,
+    left: `${localBounds.x}px`,
+    top: `${localBounds.y}px`,
+    width: `${localBounds.width}px`,
+    height: `${localBounds.height}px`,
     display: 'block',
   }
 })
@@ -107,7 +135,22 @@ const targetBoxStyle = computed(() => {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-onMounted(() => {
+onMounted(async () => {
+  // Read overlay window bounds from main process (one-time)
+  try {
+    const bounds = await getWindowBounds()
+    overlayBounds.value = bounds
+  }
+  catch {
+    // Fallback: assume bounds start at (0,0) with window inner size
+    overlayBounds.value = {
+      x: 0,
+      y: 0,
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }
+  }
+
   controller.start()
 })
 
@@ -151,16 +194,16 @@ onUnmounted(() => {
     </div>
 
     <!-- All candidate boxes -->
-    <template v-if="hasSnapshot && candidates.length > 0">
+    <template v-if="hasSnapshot && visibleCandidates.length > 0">
       <div
-        v-for="candidate in candidates"
+        v-for="candidate in visibleCandidates"
         :key="candidate.id"
         :class="['candidate-box']"
         :style="{
-          left: `${candidate.bounds.x}px`,
-          top: `${candidate.bounds.y}px`,
-          width: `${candidate.bounds.width}px`,
-          height: `${candidate.bounds.height}px`,
+          left: `${candidate.localBounds.x}px`,
+          top: `${candidate.localBounds.y}px`,
+          width: `${candidate.localBounds.width}px`,
+          height: `${candidate.localBounds.height}px`,
           borderColor: sourceColor(candidate.source),
           opacity: isStale ? 0.3 : 1,
         }"
