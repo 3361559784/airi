@@ -3,6 +3,11 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
 import type { CodingVerificationGateReasonCode } from '../coding/verification-gate'
 import type {
+  CrossLaneConstraint,
+  CrossLaneHandoffReason,
+  CrossLaneSurface,
+} from '../lane-handoff-contract'
+import type {
   BrowserDomFrameResult,
   ClickActionInput,
   FocusAppActionInput,
@@ -25,6 +30,10 @@ import {
 import { CodingPrimitives } from '../coding/primitives'
 import { evaluateCodingVerificationGate } from '../coding/verification-gate'
 import { evaluateCodingVerificationNudge } from '../coding/verification-nudge'
+import {
+  CROSS_LANE_ALLOWED_ROUTES,
+  validateCrossLaneRoute,
+} from '../lane-handoff-contract'
 import { getRuntimePreflight } from '../preflight'
 import { summarizeRunState } from '../transparency'
 import {
@@ -47,6 +56,11 @@ import {
 import { registerCodingTools } from './register-coding'
 import { createAcquirePtyCallback, executeApprovedPtyCreate } from './register-pty'
 import { registerToolWithDescriptor, requireDescriptor } from './tool-descriptors/register-helper'
+import {
+  captureClickEvidence,
+  captureHandoffEvidence,
+  captureUiInteractionEvidence,
+} from './verification-evidence-capture'
 import { formatWorkflowStructuredContent } from './workflow-formatter'
 import { createWorkflowPrepToolExecutor } from './workflow-prep-tools'
 
@@ -529,6 +543,23 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
         tabId,
         frameIds,
       })
+
+      // Evidence Capture: browser dom click
+      captureClickEvidence(runtime, {
+        source: 'browser_dom_click',
+        actionKind: 'browser_dom_click',
+        subject: selector,
+        observed: {
+          selector,
+          targetFrameId: result.targetFrameId,
+          targetPointX: result.targetPoint.x,
+          targetPointY: result.targetPoint.y,
+          appName: runtime.stateManager.getState().activeApp,
+          windowTitle: runtime.stateManager.getState().activeWindowTitle,
+        },
+        summary: `Clicked selector "${selector}" in browser.`,
+      })
+
       return {
         content: [
           textContent(`Clicked selector "${selector}" in frame ${result.targetFrameId} at (${result.targetPoint.x}, ${result.targetPoint.y}).`),
@@ -599,6 +630,21 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
         tabId,
         frameIds,
       })
+
+      // Evidence Capture: browser dom set_input_value
+      captureUiInteractionEvidence(runtime, {
+        source: 'browser_dom_set_input_value',
+        actionKind: 'browser_dom_set_input_value',
+        subject: selector,
+        observed: {
+          selector,
+          valueLength: value.length,
+          appName: runtime.stateManager.getState().activeApp,
+          windowTitle: runtime.stateManager.getState().activeWindowTitle,
+        },
+        summary: `Set input value for "${selector}" in browser.`,
+      })
+
       return {
         content: [
           textContent(summarizeBrowserDomFrameResults(`set_input_value for "${selector}"`, results)),
@@ -634,6 +680,21 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
         tabId,
         frameIds,
       })
+
+      // Evidence Capture: browser dom check_checkbox
+      captureUiInteractionEvidence(runtime, {
+        source: 'browser_dom_check_checkbox',
+        actionKind: 'browser_dom_check_checkbox',
+        subject: selector,
+        observed: {
+          selector,
+          checked: checked ?? 'toggle',
+          appName: runtime.stateManager.getState().activeApp,
+          windowTitle: runtime.stateManager.getState().activeWindowTitle,
+        },
+        summary: `Toggled/Set checkbox "${selector}" in browser.`,
+      })
+
       return {
         content: [
           textContent(summarizeBrowserDomFrameResults(`check_checkbox for "${selector}"`, results)),
@@ -669,6 +730,21 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
         tabId,
         frameIds,
       })
+
+      // Evidence Capture: browser dom select_option
+      captureUiInteractionEvidence(runtime, {
+        source: 'browser_dom_select_option',
+        actionKind: 'browser_dom_select_option',
+        subject: selector,
+        observed: {
+          selector,
+          selectedValue: value,
+          appName: runtime.stateManager.getState().activeApp,
+          windowTitle: runtime.stateManager.getState().activeWindowTitle,
+        },
+        summary: `Selected option "${value}" for "${selector}" in browser.`,
+      })
+
       return {
         content: [
           textContent(summarizeBrowserDomFrameResults(`select_option for "${selector}"`, results)),
@@ -1814,6 +1890,118 @@ export function registerComputerUseTools(params: RegisterComputerUseToolsOptions
       suspendedWorkflow = result.suspension
 
       return formatWorkflowResult(suspension.workflow.id, result)
+    },
+  })
+
+  registerToolWithDescriptor(server, {
+    descriptor: requireDescriptor('workflow_switch_lane'),
+
+    schema: {
+      sourceLane: z.enum(['coding', 'browser', 'terminal', 'desktop']).describe('The lane currently active (where the switch is being requested from).'),
+      targetLane: z.enum(['coding', 'browser', 'terminal', 'desktop']).describe('The lane you want to enter.'),
+      reason: z.enum(['validate_visual_state', 'validate_runtime_behavior', 'return_evidence', 'inspect_network', 'observe_console_errors']).describe('Declared reason for the handoff — must be an allowed reason for the route.'),
+      constraints: z.array(
+        z.object({
+          description: z.string().min(1).describe('What must be verified in the target lane.'),
+          required: z.boolean().describe('Whether failure to satisfy this constraint blocks the handoff.'),
+          expectedValue: z.string().optional().describe('Optional expected value or pattern for automated assertion.'),
+        }),
+      ).min(1).describe('Verification obligations the target lane must fulfill. At least one is required.'),
+    },
+
+    handler: async ({ sourceLane, targetLane, reason, constraints }) => {
+      const validation = validateCrossLaneRoute({
+        sourceLane: sourceLane as CrossLaneSurface,
+        targetLane: targetLane as CrossLaneSurface,
+        reason: reason as CrossLaneHandoffReason,
+      })
+
+      if (!validation.allowed) {
+        return {
+          isError: true,
+          content: [textContent(`Cross-lane handoff denied: ${validation.reason}`)],
+          structuredContent: {
+            status: 'denied',
+            reason: validation.reason,
+            sourceLane,
+            targetLane,
+            requestedReason: reason,
+            allowedRoutes: CROSS_LANE_ALLOWED_ROUTES.map(r => ({
+              route: `${r.sourceLane}→${r.targetLane}`,
+              allowedReasons: r.allowedReasons,
+            })),
+          },
+        }
+      }
+
+      const handoffIsReturn = targetLane === 'coding'
+      const activeContract = runtime.stateManager.getState().activeHandoffContract
+
+      const handoffId = (handoffIsReturn && activeContract && activeContract.sourceLane === targetLane)
+        ? activeContract.id
+        : `handoff_${Date.now()}_${sourceLane}_to_${targetLane}`
+
+      const contract = {
+        id: handoffId,
+        sourceLane,
+        targetLane,
+        reason,
+        constraints: constraints as CrossLaneConstraint[],
+        approvalScope: validation.approvalScope,
+        status: 'pending' as const,
+        initiatedAt: new Date().toISOString(),
+      }
+
+      const constraintSummary = constraints
+        .map((c, i) => `${i + 1}. [${c.required ? 'required' : 'optional'}] ${c.description}${c.expectedValue ? ` (expected: ${c.expectedValue})` : ''}`)
+        .join('\n')
+
+      // Evidence Capture: handoff status
+      const evidenceSummary = handoffIsReturn
+        ? `Handoff return: ${sourceLane} -> ${targetLane}. Evidence captured before return.`
+        : `Handoff initiated: ${sourceLane} -> ${targetLane}. Expected constraints: ${constraints.length}`
+
+      captureHandoffEvidence(runtime, {
+        source: handoffIsReturn ? 'workflow_switch_lane_return' : 'workflow_switch_lane_initiation',
+        handoffId,
+        sourceLane,
+        targetLane,
+        reason,
+        summary: evidenceSummary,
+        constraints: constraints as CrossLaneConstraint[],
+        observation: handoffIsReturn
+          ? {
+              foregroundApp: runtime.stateManager.getState().activeApp,
+              windowTitle: runtime.stateManager.getState().activeWindowTitle,
+            }
+          : undefined,
+      })
+
+      // If returning, check if we transitioned and fulfilled a contract
+      const newState = runtime.stateManager.getState()
+      const resolvedContract = newState.handoffHistory.find(h => h.id === handoffId)
+
+      let fulfillmentAdvice = ''
+      if (resolvedContract) {
+        const statusText = resolvedContract.status.toUpperCase()
+        const failureText = resolvedContract.failureReason ? ` - ${resolvedContract.failureReason}` : ''
+        const repairText = (resolvedContract.repairHint && resolvedContract.repairHint !== 'none')
+          ? `\n[REPAIR SUGGESTED] Action: ${resolvedContract.repairHint}. Please attempt this recovery step before proceeding.`
+          : ''
+        fulfillmentAdvice = `\n\nVerification Contract Result: ${statusText}${failureText}${repairText}`
+      }
+
+      return {
+        content: [
+          textContent(
+            `Cross-lane handoff initiated: ${sourceLane} → ${targetLane} (reason: ${reason}).\n\nVerification constraints that must be fulfilled in target lane:\n${constraintSummary}\n\nHandoff ID: ${handoffId}${fulfillmentAdvice}`,
+          ),
+        ],
+        structuredContent: {
+          status: handoffIsReturn ? 'handoff_resolved' : 'handoff_initiated',
+          contract: handoffIsReturn ? resolvedContract : contract,
+        },
+      }
     },
   })
 }

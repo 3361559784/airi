@@ -81,8 +81,26 @@ export function clampSearchLimit(limit?: number, defaultLimit = SEARCH_RESULT_DE
   return Math.min(Math.floor(limit as number), SEARCH_RESULT_MAX_LIMIT)
 }
 
+/**
+ * Builds a pagination hint string when returned matches reach the limit.
+ * Returns undefined when there are no more results to page through.
+ */
+export function buildPaginationHint(params: {
+  effectiveLimit: number
+  returnedCount: number
+  total: number
+}): string | undefined {
+  if (params.returnedCount < params.effectiveLimit) {
+    return undefined
+  }
+  return `[Results truncated at limit=${params.effectiveLimit}; total matches found=${params.total}. To page through results, reduce the search scope or use a more specific query.]`
+}
+
+/** Matches line-break sequences for snippet single-lining. */
+const LINE_BREAK_RE = /[\r\n]+/g
+
 export function toSingleLineSnippet(raw: string, maxLength = SEARCH_SNIPPET_MAX_LENGTH) {
-  const singleLine = raw.replace(/[\r\n]+/g, ' ').trim()
+  const singleLine = raw.replace(LINE_BREAK_RE, ' ').trim()
   if (singleLine.length <= maxLength) {
     return singleLine
   }
@@ -261,6 +279,9 @@ function resolveReportedPath(params: {
   }
 }
 
+/** Parses ripgrep output lines in `file:line:column:text` format. */
+const RIPGREP_LINE_RE = /^(.+?):(\d+):(\d+):(.*)$/
+
 function parseRipgrepMatches(params: {
   output: string
   workspacePath: string
@@ -277,7 +298,7 @@ function parseRipgrepMatches(params: {
 
   for (const line of lines) {
     // `rg --line-number --column --no-heading`: file:line:column:text
-    const parsed = line.match(/^(.+?):(\d+):(\d+):(.*)$/)
+    const parsed = line.match(RIPGREP_LINE_RE)
     if (!parsed) {
       continue
     }
@@ -328,15 +349,52 @@ export async function searchText(workspacePath: string, query: string, options: 
 
   args.push(normalizedQuery, '.')
   const output = await runRipgrep(args, searchRoot)
-  const matches = parseRipgrepMatches({
+  let matches = parseRipgrepMatches({
     output,
     workspacePath,
     searchRoot,
-  }).slice(0, effectiveLimit)
+  })
+
+  const files = Array.from(new Set(matches.map(m => m.file)))
+  const mtimes = new Map<string, number>()
+
+  await Promise.allSettled(
+    files.map(async (file) => {
+      try {
+        const stat = await fs.stat(path.join(workspacePath, file))
+        mtimes.set(file, stat.mtimeMs)
+      }
+      catch {
+        mtimes.set(file, 0)
+      }
+    }),
+  )
+
+  matches.sort((a, b) => {
+    const timeA = mtimes.get(a.file) || 0
+    const timeB = mtimes.get(b.file) || 0
+    if (timeA !== timeB) {
+      return timeB - timeA
+    }
+    if (a.file === b.file) {
+      return a.line - b.line
+    }
+    return a.file.localeCompare(b.file)
+  })
+
+  matches = matches.slice(0, effectiveLimit)
+
+  const paginationHint = buildPaginationHint({
+    effectiveLimit,
+    returnedCount: matches.length,
+    total,
+  })
 
   return {
     total,
+    limit: effectiveLimit,
     matches,
+    ...(paginationHint ? { paginationHint } : {}),
   }
 }
 
@@ -397,6 +455,33 @@ export async function searchSymbol(workspacePath: string, symbolName: string, op
   const output = await runRipgrep(args, searchRoot)
   const files = output.split('\n').filter(Boolean)
 
+  const mtimes = new Map<string, number>()
+  await Promise.allSettled(
+    files.map(async (file) => {
+      try {
+        const { absolutePath } = resolveReportedPath({
+          workspacePath,
+          searchRoot,
+          reportedPath: file,
+        })
+        const stat = await fs.stat(absolutePath)
+        mtimes.set(file, stat.mtimeMs)
+      }
+      catch {
+        mtimes.set(file, 0)
+      }
+    }),
+  )
+
+  files.sort((a, b) => {
+    const timeA = mtimes.get(a) || 0
+    const timeB = mtimes.get(b) || 0
+    if (timeA !== timeB) {
+      return timeB - timeA
+    }
+    return a.localeCompare(b)
+  })
+
   const allMatches: SearchMatch[] = []
 
   for (const relativeFilePath of files) {
@@ -450,6 +535,12 @@ export async function searchSymbol(workspacePath: string, symbolName: string, op
 
   const matches = allMatches.slice(0, effectiveLimit)
 
+  const paginationHint = buildPaginationHint({
+    effectiveLimit,
+    returnedCount: matches.length,
+    total: allMatches.length,
+  })
+
   return {
     engine: 'typescript' as const,
     engineDescriptor: toSemanticEngineDescriptor(semanticEngine),
@@ -462,6 +553,7 @@ export async function searchSymbol(workspacePath: string, symbolName: string, op
     total: allMatches.length,
     limit: effectiveLimit,
     matches,
+    ...(paginationHint ? { paginationHint } : {}),
   }
 }
 
@@ -628,6 +720,12 @@ export async function findReferences(workspacePath: string, filePath: string, li
 
   const limitedMatches = matches.slice(0, effectiveLimit)
 
+  const paginationHint = buildPaginationHint({
+    effectiveLimit,
+    returnedCount: limitedMatches.length,
+    total: matches.length,
+  })
+
   return {
     engine: 'typescript' as const,
     engineDescriptor: toSemanticEngineDescriptor(semanticEngine),
@@ -640,5 +738,6 @@ export async function findReferences(workspacePath: string, filePath: string, li
     total: matches.length,
     limit: effectiveLimit,
     matches: limitedMatches,
+    ...(paginationHint ? { paginationHint } : {}),
   }
 }
