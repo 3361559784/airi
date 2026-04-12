@@ -58,7 +58,7 @@ export const desktopDescriptors: ToolDescriptor[] = [
     concurrencySafe: true,
     requiresApprovalByDefault: false,
     public: true,
-    defaultDeferred: true,
+    defaultDeferred: false,
   },
   {
     canonicalName: 'desktop_click_target',
@@ -71,7 +71,7 @@ export const desktopDescriptors: ToolDescriptor[] = [
     concurrencySafe: false,
     requiresApprovalByDefault: false,
     public: true,
-    defaultDeferred: true,
+    defaultDeferred: false,
   },
 
   // Desktop interaction tools
@@ -177,7 +177,7 @@ export const desktopDescriptors: ToolDescriptor[] = [
     concurrencySafe: true,
     requiresApprovalByDefault: false,
     public: true,
-    defaultDeferred: true,
+    defaultDeferred: false,
   },
   {
     canonicalName: 'desktop_get_session_trace',
