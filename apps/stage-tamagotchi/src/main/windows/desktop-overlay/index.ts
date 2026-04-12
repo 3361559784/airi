@@ -19,11 +19,16 @@
  * intercepts real user or OS-level click events.
  */
 
+import type { I18n } from '../../libs/i18n'
+import type { ServerChannel } from '../../services/airi/channel-server'
+import type { McpStdioManager } from '../../services/airi/mcp-servers'
+
 import { join, resolve } from 'node:path'
 
 import { BrowserWindow, screen } from 'electron'
 
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
+import { setupDesktopOverlayElectronInvokes } from './rpc/index.electron'
 
 /** Whether the desktop overlay feature is enabled */
 export function isDesktopOverlayEnabled(): boolean {
@@ -42,7 +47,11 @@ let overlayWindow: BrowserWindow | null = null
  *
  * Returns null if AIRI_DESKTOP_OVERLAY is not set.
  */
-export async function setupDesktopOverlayWindow(): Promise<BrowserWindow | null> {
+export async function setupDesktopOverlayWindow(params: {
+  mcpStdioManager: McpStdioManager
+  serverChannel: ServerChannel
+  i18n: I18n
+}): Promise<BrowserWindow | null> {
   if (!isDesktopOverlayEnabled()) {
     return null
   }
@@ -93,6 +102,19 @@ export async function setupDesktopOverlayWindow(): Promise<BrowserWindow | null>
 
   overlayWindow.on('closed', () => {
     overlayWindow = null
+  })
+
+  // NOTICE: Wire eventa RPC BEFORE loading the renderer page.
+  // The overlay's onMounted fires during load() and immediately starts
+  // polling via callTool. If the handlers aren't registered yet, the
+  // first eventa invoke hangs forever (no response dispatched back to
+  // this window), and all subsequent poll cycles never fire because
+  // the poll loop awaits each call sequentially.
+  await setupDesktopOverlayElectronInvokes({
+    window: overlayWindow,
+    mcpStdioManager: params.mcpStdioManager,
+    serverChannel: params.serverChannel,
+    i18n: params.i18n,
   })
 
   // Load the overlay renderer page

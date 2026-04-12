@@ -128,10 +128,13 @@ export interface OverlayPollConfig {
   intervalMs?: number
   /** Fallback interval on error in ms. Default: 500. */
   fallbackIntervalMs?: number
+  /** Per-call timeout in ms. Default: 5000. Prevents poll loop hang on startup race. */
+  callTimeoutMs?: number
 }
 
 const DEFAULT_INTERVAL = 250
 const DEFAULT_FALLBACK_INTERVAL = 500
+const DEFAULT_CALL_TIMEOUT = 5000
 
 /**
  * MCP server name for computer-use-mcp. Matches the key in mcp.json.
@@ -153,7 +156,15 @@ export function createOverlayPollController(config: OverlayPollConfig): OverlayP
     let nextInterval = normalInterval
 
     try {
-      const result = await config.callTool(MCP_TOOL_NAME)
+      // NOTICE: Wrap callTool with a timeout to prevent the poll loop from
+      // hanging forever if the eventa invoke never resolves (e.g. during
+      // startup when the main-process RPC handlers may not be ready yet).
+      const result = await Promise.race([
+        config.callTool(MCP_TOOL_NAME),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('callTool timeout')), config.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT),
+        ),
+      ])
       const runState = extractRunStateFromResult(result)
 
       if (runState) {
@@ -164,7 +175,7 @@ export function createOverlayPollController(config: OverlayPollConfig): OverlayP
       }
     }
     catch {
-      // MCP server not running or bridge disconnected — graceful degradation
+      // MCP server not running, bridge disconnected, or timeout — graceful degradation
       nextInterval = fallbackInterval
     }
 

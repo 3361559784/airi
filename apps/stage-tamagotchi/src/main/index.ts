@@ -190,7 +190,8 @@ app.whenReady().then(async () => {
   // Desktop grounding overlay — gated by AIRI_DESKTOP_OVERLAY=1
   if (isDesktopOverlayEnabled()) {
     const desktopOverlay = injeca.provide('windows:desktop-overlay', {
-      build: async () => setupDesktopOverlayWindow(),
+      dependsOn: { mcpStdioManager, serverChannel, i18n },
+      build: async ({ dependsOn }) => setupDesktopOverlayWindow(dependsOn),
     })
 
     // NOTICE: Separate invoke ensures the overlay is eagerly built.

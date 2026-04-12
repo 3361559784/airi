@@ -287,4 +287,52 @@ describe('createOverlayPollController', () => {
 
     controller.stop()
   })
+
+  it('recovers from a hanging callTool via per-call timeout', async () => {
+    vi.useFakeTimers()
+
+    // First call hangs forever (simulates startup race when RPC not ready)
+    const callTool = vi.fn<(name: string) => Promise<McpCallToolResult>>()
+      .mockImplementationOnce(() => new Promise(() => {})) // never resolves
+      .mockResolvedValue({
+        structuredContent: {
+          runState: {
+            lastGroundingSnapshot: {
+              snapshotId: 'dg_after_timeout',
+              targetCandidates: [],
+              staleFlags: { screenshot: false, ax: false, chromeSemantic: false },
+            },
+          },
+        },
+      })
+
+    const received: OverlayState[] = []
+
+    const controller = createOverlayPollController({
+      callTool,
+      onState: (s) => { received.push(s) },
+      intervalMs: 100,
+      fallbackIntervalMs: 200,
+      callTimeoutMs: 500,
+    })
+
+    controller.start()
+
+    // First poll fires immediately, callTool hangs
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callTool).toHaveBeenCalledTimes(1)
+    expect(received).toHaveLength(0)
+
+    // Advance past the 500ms timeout → catch triggers, schedules fallback
+    await vi.advanceTimersByTimeAsync(500)
+    expect(received).toHaveLength(0)
+
+    // Advance past the 200ms fallback interval → second poll fires and succeeds
+    await vi.advanceTimersByTimeAsync(200)
+    expect(callTool).toHaveBeenCalledTimes(2)
+    expect(received).toHaveLength(1)
+    expect(received[0].snapshotId).toBe('dg_after_timeout')
+
+    controller.stop()
+  })
 })
