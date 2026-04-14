@@ -65,10 +65,19 @@ function checkBrowserDomPreconditions(
 export function decideBrowserAction(
   candidate: DesktopTargetCandidate,
   bridgeAvailable: boolean,
+  actionButton: 'left' | 'right' | 'middle' = 'left',
+  clickCount = 1,
 ): BrowserActionDecision {
   const rejection = checkBrowserDomPreconditions(candidate, bridgeAvailable)
   if (rejection)
     return rejection
+
+  if (actionButton !== 'left' || clickCount !== 1) {
+    return {
+      route: 'os_input',
+      reason: `browser-dom click routing only supports left single-click, got ${actionButton} with count ${clickCount}`,
+    }
+  }
 
   // Checkbox: route to checkCheckbox instead of generic click
   if (isCheckboxCandidate(candidate)) {
