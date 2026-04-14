@@ -348,7 +348,11 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
           break
         }
         case 'type_text': {
-          if (typeof normalizedAction.input.x === 'number' && typeof normalizedAction.input.y === 'number') {
+          const hasExplicitCoordinates
+            = typeof normalizedAction.input.x === 'number'
+              && typeof normalizedAction.input.y === 'number'
+
+          if (hasExplicitCoordinates) {
             const pointerTrace = buildPointerTrace({
               from: runtime.session.getPointerPosition(),
               to: { x: normalizedAction.input.x, y: normalizedAction.input.y },
@@ -379,7 +383,7 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
           const runState = runtime.stateManager.getState()
           const lastSnapshot = runState.lastGroundingSnapshot
           const lastClickedId = runState.lastClickedCandidateId
-          if (lastClickedId && lastSnapshot) {
+          if (!hasExplicitCoordinates && lastClickedId && lastSnapshot) {
             const lastCandidate = lastSnapshot.targetCandidates.find(
               c => c.id === lastClickedId,
             )
