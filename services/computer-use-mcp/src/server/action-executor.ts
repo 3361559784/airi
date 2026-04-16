@@ -12,8 +12,8 @@ import type {
 import type { ComputerUseServerRuntime } from './runtime'
 
 import { normalizeConfiguredAppAction } from '../app-aliases'
-import { isBrowserDomActionSupported } from '../browser-dom/capabilities'
 import { decideBrowserTypeAction } from '../browser-action-router'
+import { isBrowserDomActionSupported } from '../browser-dom/capabilities'
 import { evaluateActionPolicy } from '../policy'
 import { getRuntimePreflight } from '../preflight'
 import { buildCoordinateSpaceInfo } from '../runtime-probes'
