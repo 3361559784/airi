@@ -37,7 +37,7 @@
       name: el.name || '',
       type: el.type || '',
       className: typeof el.className === 'string' ? el.className.slice(0, 120) : '',
-      text: (el.innerText || el.textContent || '').slice(0, 120).trim(),
+      text: (el.textContent || '').slice(0, 120).trim(),
       value: el.value !== undefined ? String(el.value).slice(0, 60) : '',
       href: el.href || '',
       placeholder: el.placeholder || '',
@@ -67,6 +67,71 @@
     return els
   }
 
+  /**
+   * Collect direct child frame anchors in the current frame.
+   *
+   * NOTICE: This only describes the iframe/frame shell that lives in the
+   * current document. The background worker uses these anchors together with
+   * the Chrome frame tree to reconstruct per-frame viewport offsets.
+   */
+  function _collectChildFrames() {
+    const nodes = document.querySelectorAll('iframe,frame')
+    const frames = []
+
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i]
+      const r = node.getBoundingClientRect()
+      if (r.width <= 0 || r.height <= 0)
+        continue
+
+      let contentUrl = ''
+      try {
+        contentUrl = node.contentWindow?.location?.href || ''
+      }
+      catch {
+        // Cross-origin child frames cannot reveal contentWindow.location here.
+      }
+
+      frames.push({
+        index: i,
+        id: node.id || '',
+        name: node.name || '',
+        title: node.getAttribute('title') || '',
+        src: node.getAttribute('src') || '',
+        contentUrl,
+        rect: {
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        },
+      })
+    }
+
+    return frames
+  }
+
+  function _readFrameOffsetInParent() {
+    if (window.top === window) {
+      return { x: 0, y: 0 }
+    }
+
+    try {
+      const frameEl = window.frameElement
+      if (!frameEl)
+        return null
+
+      const r = frameEl.getBoundingClientRect()
+      return {
+        x: Math.round(r.left),
+        y: Math.round(r.top),
+      }
+    }
+    catch {
+      return null
+    }
+  }
+
   // ---- Core API (read-only) ----
 
   const __AIRI_DG__ = {
@@ -83,8 +148,19 @@
       return {
         url: location.href,
         title: document.title || '',
-        bodyText: includeText ? (document.body ? document.body.innerText || '' : '').slice(0, 3000) : '',
+        frameName: window.name || '',
+        frameOffsetInParent: _readFrameOffsetInParent(),
+        bodyText: includeText ? (document.body?.textContent || '').slice(0, 3000) : '',
         interactiveElements: _collectInteractiveElements(maxElements),
+      }
+    },
+
+    /**
+     * Describe direct child iframe/frame shells in the current document.
+     */
+    collectChildFrames() {
+      return {
+        childFrames: _collectChildFrames(),
       }
     },
 
@@ -136,6 +212,8 @@
         return {
           success: true,
           element: _describeElement(el),
+          x: Math.round(r.left + r.width / 2),
+          y: Math.round(r.top + r.height / 2),
           center: {
             x: Math.round(r.left + r.width / 2),
             y: Math.round(r.top + r.height / 2),

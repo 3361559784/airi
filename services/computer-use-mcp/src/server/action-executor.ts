@@ -13,6 +13,7 @@ import type { ComputerUseServerRuntime } from './runtime'
 
 import { normalizeConfiguredAppAction } from '../app-aliases'
 import { decideBrowserTypeAction } from '../browser-action-router'
+import { isBrowserDomActionSupported } from '../browser-dom/capabilities'
 import { evaluateActionPolicy } from '../policy'
 import { getRuntimePreflight } from '../preflight'
 import { buildCoordinateSpaceInfo } from '../runtime-probes'
@@ -348,7 +349,11 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
           break
         }
         case 'type_text': {
-          if (typeof normalizedAction.input.x === 'number' && typeof normalizedAction.input.y === 'number') {
+          const hasExplicitCoordinates
+            = typeof normalizedAction.input.x === 'number'
+              && typeof normalizedAction.input.y === 'number'
+
+          if (hasExplicitCoordinates) {
             const pointerTrace = buildPointerTrace({
               from: runtime.session.getPointerPosition(),
               to: { x: normalizedAction.input.x, y: normalizedAction.input.y },
@@ -379,14 +384,18 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
           const runState = runtime.stateManager.getState()
           const lastSnapshot = runState.lastGroundingSnapshot
           const lastClickedId = runState.lastClickedCandidateId
-          if (lastClickedId && lastSnapshot) {
+          if (!hasExplicitCoordinates && lastClickedId && lastSnapshot) {
             const lastCandidate = lastSnapshot.targetCandidates.find(
               c => c.id === lastClickedId,
             )
             if (lastCandidate) {
               const bridgeConnected = runtime.browserDomBridge?.getStatus().connected ?? false
               const typeDecision = decideBrowserTypeAction(lastCandidate, bridgeConnected)
-              if (typeDecision.route === 'browser_dom' && typeDecision.selector) {
+              if (
+                typeDecision.route === 'browser_dom'
+                && typeDecision.selector
+                && isBrowserDomActionSupported(runtime.browserDomBridge, 'setInputValue')
+              ) {
                 try {
                   await runtime.browserDomBridge!.setInputValue({
                     selector: typeDecision.selector,
