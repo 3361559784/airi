@@ -12,6 +12,7 @@ import type {
 import type { ComputerUseServerRuntime } from './runtime'
 
 import { normalizeConfiguredAppAction } from '../app-aliases'
+import { isBrowserDomActionSupported } from '../browser-dom/capabilities'
 import { decideBrowserTypeAction } from '../browser-action-router'
 import { evaluateActionPolicy } from '../policy'
 import { getRuntimePreflight } from '../preflight'
@@ -390,7 +391,11 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
             if (lastCandidate) {
               const bridgeConnected = runtime.browserDomBridge?.getStatus().connected ?? false
               const typeDecision = decideBrowserTypeAction(lastCandidate, bridgeConnected)
-              if (typeDecision.route === 'browser_dom' && typeDecision.selector) {
+              if (
+                typeDecision.route === 'browser_dom'
+                && typeDecision.selector
+                && isBrowserDomActionSupported(runtime.browserDomBridge, 'setInputValue')
+              ) {
                 try {
                   await runtime.browserDomBridge!.setInputValue({
                     selector: typeDecision.selector,
