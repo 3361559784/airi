@@ -5,6 +5,7 @@ import type { CommonContentPart, Message, ToolMessage } from '@xsai/shared-chat'
 import type { ChatAssistantMessage, ChatSlices, ChatStreamEventContext, StreamingAssistantMessage } from '../types/chat'
 import type { StreamEvent, StreamOptions } from './llm'
 
+import { IOAttributes, IOEvents, IOSpanNames, IOSubsystems } from '@proj-airi/stage-shared'
 import { createQueue } from '@proj-airi/stream-kit'
 import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
@@ -13,6 +14,7 @@ import { computed, ref, toRaw } from 'vue'
 import { useAnalytics } from '../composables'
 import { useLlmmarkerParser } from '../composables/llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from '../composables/response-categoriser'
+import { activeTurnSpan, startSpan } from '../composables/use-io-tracer'
 import { formatContextPromptText } from './chat/context-prompt'
 import { createDatetimeContext, createMinecraftContext } from './chat/context-providers'
 import { useChatContextStore } from './chat/context-store'
@@ -21,6 +23,8 @@ import { useChatSessionStore } from './chat/session-store'
 import { useChatStreamStore } from './chat/stream-store'
 import { useContextObservabilityStore } from './devtools/context-observability'
 import { useLLM } from './llm'
+import { useAiriCardStore } from './modules/airi-card'
+import { useAutonomousArtistryStore } from './modules/artistry-autonomous'
 import { useConsciousnessStore } from './modules/consciousness'
 
 function cloneStreamingMessage(message: StreamingAssistantMessage): StreamingAssistantMessage {
@@ -72,12 +76,14 @@ export interface QueuedSendSnapshot {
 export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const llmStore = useLLM()
   const consciousnessStore = useConsciousnessStore()
+  const artistryAutonomousStore = useAutonomousArtistryStore()
   const { activeProvider } = storeToRefs(consciousnessStore)
   const { trackFirstMessage } = useAnalytics()
 
   const chatSession = useChatSessionStore()
   const chatStream = useChatStreamStore()
   const chatContext = useChatContextStore()
+  const cardStore = useAiriCardStore()
   const contextObservability = useContextObservabilityStore()
   const { activeSessionId } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
@@ -162,6 +168,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       return
 
     sending.value = true
+    let hadExistingTurn = false
 
     const isForegroundSession = () => sessionId === activeSessionId.value
 
@@ -214,6 +221,15 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         id: nanoid(),
       })
       const sessionMessagesForSend = chatSession.getSessionMessages(sessionId)
+
+      // --------------------------------
+      // Cinematic Autonomy (Autonomous Artist)
+      // Trigger now only if in user-centric mode. Assistant-centric runs after response is complete.
+      const autonomousTarget = cardStore.activeCard?.extensions?.airi?.modules?.artistry?.autonomousTarget || 'user'
+      if (autonomousTarget === 'user') {
+        void artistryAutonomousStore.runArtistTask(sendingMessage, sessionMessagesForSend as any)
+      }
+      // --------------------------------
 
       const categorizer = createStreamingCategorizer(activeProvider.value)
       let streamPosition = 0
@@ -360,49 +376,74 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       if (shouldAbort())
         return
 
-      await llmStore.stream(options.model, options.chatProvider, newMessages as Message[], {
-        headers,
-        tools: options.tools,
-        // NOTICE: xsai stream may emit `finish` before tool steps continue, so keep waiting until
-        // the final non-tool finish to avoid ending the chat turn with no assistant reply.
-        waitForTools: true,
-        onStreamEvent: async (event: StreamEvent) => {
-          switch (event.type) {
-            case 'tool-call':
-              toolCallQueue.enqueue({
-                type: 'tool-call',
-                toolCall: event,
-              })
+      hadExistingTurn = !!activeTurnSpan.value
+      if (!hadExistingTurn)
+        activeTurnSpan.value = startSpan(IOSpanNames.InteractionTurn)
 
-              break
-            case 'tool-result':
-              toolCallQueue.enqueue({
-                type: 'tool-call-result',
-                id: event.toolCallId,
-                result: event.result,
-              })
-
-              break
-            case 'tool-error':
-              toolCallQueue.enqueue({
-                type: 'tool-call-result',
-                id: event.toolCallId,
-                isError: true,
-                result: event.result,
-              })
-
-              break
-            case 'text-delta':
-              fullText += event.text
-              await parser.consume(event.text)
-              break
-            case 'finish':
-              break
-            case 'error':
-              throw event.error ?? new Error('Stream error')
-          }
-        },
+      const llmSpan = startSpan(IOSpanNames.LLMInference, activeTurnSpan.value, {
+        [IOAttributes.Subsystem]: IOSubsystems.LLM,
+        [IOAttributes.GenAIRequestModel]: options.model,
       })
+      const llmRequestTs = performance.now()
+      let llmFirstTokenEmitted = false
+
+      try {
+        await llmStore.stream(options.model, options.chatProvider, newMessages as Message[], {
+          headers,
+          tools: options.tools,
+          // NOTICE: xsai stream may emit `finish` before tool steps continue, so keep waiting until
+          // the final non-tool finish to avoid ending the chat turn with no assistant reply.
+          waitForTools: true,
+          onStreamEvent: async (event: StreamEvent) => {
+            switch (event.type) {
+              case 'tool-call':
+                toolCallQueue.enqueue({
+                  type: 'tool-call',
+                  toolCall: event,
+                })
+
+                break
+              case 'tool-result':
+                toolCallQueue.enqueue({
+                  type: 'tool-call-result',
+                  id: event.toolCallId,
+                  result: event.result,
+                })
+
+                break
+              case 'tool-error':
+                toolCallQueue.enqueue({
+                  type: 'tool-call-result',
+                  id: event.toolCallId,
+                  isError: true,
+                  result: event.result,
+                })
+
+                break
+              case 'text-delta':
+                if (!llmFirstTokenEmitted) {
+                  llmFirstTokenEmitted = true
+                  llmSpan.addEvent(IOEvents.LLMFirstToken, {
+                    [IOAttributes.LLM_TTFT]: performance.now() - llmRequestTs,
+                  })
+                }
+                fullText += event.text
+                await parser.consume(event.text)
+                break
+              case 'finish':
+                break
+              case 'error':
+                throw event.error ?? new Error('Stream error')
+            }
+          },
+        })
+
+        llmSpan.setAttribute(IOAttributes.LLMTextLength, fullText.length)
+      }
+      finally {
+        // TODO: Record errors on llmSpan
+        llmSpan.end()
+      }
 
       await parser.end()
 
@@ -421,6 +462,13 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         toolCalls: sessionMessagesForSend.filter(msg => msg.role === 'tool') as ToolMessage[],
       }, streamingMessageContext)
 
+      // --- AUTONOMOUS ARTISTRY HOOK (ASSISTANT-CENTRIC) ---
+      const artistry = cardStore.activeCard?.extensions?.airi?.modules?.artistry
+      if (artistry?.autonomousEnabled && artistry?.autonomousTarget === 'assistant') {
+        void artistryAutonomousStore.runArtistTask(fullText, sessionMessagesForSend as any)
+      }
+      // ---------------------------------------------------
+
       if (isForegroundSession()) {
         streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
       }
@@ -430,6 +478,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       throw error
     }
     finally {
+      if (!hadExistingTurn && activeTurnSpan.value) {
+        activeTurnSpan.value.end()
+        activeTurnSpan.value = undefined
+      }
       sending.value = false
     }
   }

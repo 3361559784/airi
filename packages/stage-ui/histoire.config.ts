@@ -1,3 +1,5 @@
+import Info from 'unplugin-info/vite'
+
 import { HstVue } from '@histoire/plugin-vue'
 import { defineConfig } from 'histoire'
 
@@ -71,6 +73,12 @@ export default defineConfig({
   ],
   vite: {
     base: '/ui/',
+    plugins: [
+      Info(),
+    ],
+    build: {
+      target: 'esnext',
+    },
   },
   setupFile: {
     browser: 'stories/setup.ts',
@@ -97,16 +105,20 @@ export default defineConfig({
         title: 'Form',
       },
       {
+        id: 'dialogs',
+        title: 'Dialogs',
+      },
+      {
+        id: 'menu',
+        title: 'Menu',
+      },
+      {
         id: 'misc',
         title: 'Misc',
       },
       {
         id: 'data-pane',
         title: 'Data Pane',
-      },
-      {
-        id: 'menu',
-        title: 'Menu',
       },
       {
         id: 'widgets',

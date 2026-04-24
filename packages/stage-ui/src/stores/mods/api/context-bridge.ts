@@ -55,10 +55,15 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
 
   const { post: broadcastContext, data: incomingContext } = useBroadcastChannel<ContextMessage, ContextMessage>({ name: CONTEXT_CHANNEL_NAME })
   const { post: broadcastStreamEvent, data: incomingStreamEvent } = useBroadcastChannel<ChatStreamEvent, ChatStreamEvent>({ name: CHAT_STREAM_CHANNEL_NAME })
+  const sparkNotifyHostRole = ref<'main' | 'client'>('client')
 
   const disposeHookFns = ref<Array<() => void>>([])
   let remoteStreamGuard: { sessionId: string, generation: number } | null = null
   let initialized = false
+
+  function setSparkNotifyHostRole(role: 'main' | 'client') {
+    sparkNotifyHostRole.value = role
+  }
 
   async function initialize() {
     await mutex.acquire()
@@ -425,7 +430,7 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
               await chatOrchestrator.emitBeforeSendHooks(event.message, event.context)
               remoteStreamGuard = {
                 sessionId: chatSession.activeSessionId,
-                generation: chatSession.getSessionGenerationValue(),
+                generation: chatSession.getSessionGenerationValue(chatSession.activeSessionId),
               }
               chatOrchestrator.sending = true
               chatStream.beginStream()
@@ -525,5 +530,6 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
   return {
     initialize,
     dispose,
+    setSparkNotifyHostRole,
   }
 })
