@@ -8,12 +8,12 @@ import templateCompilerOptions from '@tresjs/core/template-compiler-options'
 import Vue from '@vitejs/plugin-vue'
 import Unocss from 'unocss/vite'
 import Info from 'unplugin-info/vite'
-import VueRouter from 'unplugin-vue-router/vite'
 import Yaml from 'unplugin-yaml/vite'
 import Mkcert from 'vite-plugin-mkcert'
 import VueDevTools from 'vite-plugin-vue-devtools'
 import Layouts from 'vite-plugin-vue-layouts'
 import VueMacros from 'vue-macros/vite'
+import VueRouter from 'vue-router/vite'
 
 import { tryCatch } from '@moeru/std'
 import { Download } from '@proj-airi/unplugin-fetch/vite'
@@ -108,7 +108,7 @@ export default defineConfig({
         ? [Mkcert((() => {
             // Workaround: plugin's bundled downloader has a feaxios bug, prefer system mkcert
             const command = process.platform === 'win32' ? 'where' : 'which'
-            // eslint-disable-next-line e18e/prefer-static-regex
+
             const { data } = tryCatch(() => ({ mkcertPath: execSync(`${command} mkcert`, { stdio: 'pipe' }).toString().trim().split(/\r?\n/)[0] }))
             return data
           })())]
@@ -130,7 +130,6 @@ export default defineConfig({
       betterDefine: false,
     }),
 
-    // https://github.com/posva/unplugin-vue-router
     VueRouter({
       extensions: ['.vue', '.md'],
       dts: resolve(import.meta.dirname, 'src/typed-router.d.ts'),
@@ -155,6 +154,18 @@ export default defineConfig({
     Unocss(),
 
     // https://github.com/antfu/vite-plugin-pwa
+    // NOTICE:
+    // The plugin must stay registered in dev — `src/modules/pwa.ts` imports
+    // the `virtual:pwa-register` module the plugin synthesises, and dropping
+    // the plugin breaks Vite's import-analysis with a "Failed to resolve
+    // import" error.
+    // SW generation in dev is already disabled by `devOptions.enabled:
+    // false` (the plugin's own default). So new SWs do NOT register from
+    // `pnpm dev` alone — but a previously-registered SW (e.g. from an
+    // earlier `vite preview` / `vite build`) lives on per-origin in the
+    // browser and keeps intercepting fetches even in dev. To recover from
+    // that state, unregister via DevTools → Application → Storage → Clear
+    // site data.
     ...(env.TARGET_HUGGINGFACE_SPACE
       ? []
       : [VitePWA({
