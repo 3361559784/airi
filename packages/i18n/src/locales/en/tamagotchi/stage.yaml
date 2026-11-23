@@ -127,6 +127,17 @@ docs:
     output: Output
     total: Total
     usage-unavailable: No provider-reported token usage for this request.
+    reading-unknown: Not available
+    reading-delta: 'Reported minus measured: {count} tokens'
+    reading:
+      measured: Measured
+      reported: Reported
+      estimated: Estimated
+    source:
+      provider-counted: provider count
+      local-tokenizer: local tokenizer
+      estimated: estimate
+      unavailable: unavailable
     budget: Compaction threshold
     budget-note: A serialized-byte threshold for scheduling compaction. It is not how full the context window is.
     expand: Show content
