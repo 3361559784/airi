@@ -50,7 +50,7 @@ import {
   readEnvValue,
 } from '../utils/env-file'
 import { errorMessageFromValue } from '../utils/error-message'
-import { executeDesktopClickTarget } from './desktop-grounding-actions'
+import { assertDesktopClickTargetSnapshot, executeDesktopClickTarget } from './desktop-grounding-actions'
 import { describeExecutionTarget, describeTerminalBackend } from './formatters'
 import { refreshRuntimeRunState } from './refresh-run-state'
 import {
@@ -487,6 +487,32 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
 
     try {
       options.executionSignal?.throwIfAborted()
+      if (normalizedAction.kind === 'desktop_click_target')
+        assertDesktopClickTargetSnapshot(runtime, normalizedAction.input.candidateId)
+      // Reserve before the next await. Overlapping executeAction calls must not share one remaining unit.
+      const admissionBudget = runtime.session.getBudgetState()
+      const admission = evaluateActionPolicy({
+        action: normalizedAction,
+        config: runtime.config,
+        context,
+        operationsExecuted: admissionBudget.operationsExecuted,
+        operationUnitsConsumed: admissionBudget.operationUnitsConsumed,
+      })
+      if (!admission.allowed) {
+        await runtime.session.record({
+          event: 'denied',
+          toolName,
+          action: normalizedAction,
+          context,
+          policy: admission,
+          result: {
+            executionTarget,
+          },
+        })
+        return finalize(buildDeniedResponse(admission, context, executionTarget, terminalBackend), options.authorizationSource)
+      }
+      runtime.session.consumeOperation(admission.estimatedOperationUnits)
+
       let backendResult: Record<string, unknown> = {}
       let terminalResult: TerminalCommandResult | undefined
       let clipboardStructuredContent: Record<string, unknown> | undefined
@@ -513,7 +539,6 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
             sourceWindowId: screenshot.sourceWindowId,
             sourceSessionTag: screenshot.sourceSessionTag,
           })
-          runtime.session.consumeOperation(decision.estimatedOperationUnits)
 
           await runtime.session.record({
             event: 'executed',
@@ -865,7 +890,6 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
         }
       }
 
-      runtime.session.consumeOperation(decision.estimatedOperationUnits)
       let screenshot: ScreenshotArtifact | undefined
       let postActionCaptureError: string | undefined
       try {

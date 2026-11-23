@@ -2,6 +2,7 @@ import type { ExecutorActionResult, ExecutorCallOptions } from '../types'
 import type { ComputerUseServerRuntime } from './runtime'
 
 import { errorMessageFrom } from '@moeru/std'
+import { differenceInMilliseconds } from 'date-fns'
 
 import { appNamesMatch } from '../app-aliases'
 import { decideBrowserAction } from '../browser-action-router'
@@ -17,6 +18,23 @@ export interface DesktopClickTargetExecution {
   backendResult: Record<string, unknown>
 }
 
+/** Rejects a grounded click that has no current observe snapshot. This does not reserve budget. */
+export function assertDesktopClickTargetSnapshot(runtime: ComputerUseServerRuntime, candidateId: string) {
+  const state = runtime.stateManager.getState()
+  const snapshot = state.lastGroundingSnapshot
+  if (!snapshot)
+    throw new Error('No computer_observe snapshot available. Call computer_observe first to get a list of target candidates.')
+
+  if (state.lastClickedCandidateId === candidateId)
+    throw new Error(`You already clicked candidate "${candidateId}" without calling computer_observe again. Call computer_observe to refresh the state before clicking the same target.`)
+
+  const snapshotAge = differenceInMilliseconds(new Date(), new Date(snapshot.capturedAt))
+  if (snapshotAge > DESKTOP_CLICK_SNAPSHOT_MAX_AGE_MS)
+    throw new Error(`Grounding snapshot "${snapshot.snapshotId}" is ${Math.round(snapshotAge / 1000)}s old. Call computer_observe to get a fresh snapshot before clicking.`)
+
+  return snapshot
+}
+
 export async function executeDesktopClickTarget(
   runtime: ComputerUseServerRuntime,
   input: {
@@ -27,22 +45,7 @@ export async function executeDesktopClickTarget(
   executorOptions: ExecutorCallOptions = {},
 ): Promise<DesktopClickTargetExecution> {
   const { candidateId, clickCount, button } = input
-  const state = runtime.stateManager.getState()
-
-  if (!state.lastGroundingSnapshot) {
-    throw new Error('No computer_observe snapshot available. Call computer_observe first to get a list of target candidates.')
-  }
-
-  const snapshot = state.lastGroundingSnapshot
-
-  if (state.lastClickedCandidateId === candidateId) {
-    throw new Error(`You already clicked candidate "${candidateId}" without calling computer_observe again. Call computer_observe to refresh the state before clicking the same target.`)
-  }
-
-  const snapshotAge = Date.now() - new Date(snapshot.capturedAt).getTime()
-  if (snapshotAge > DESKTOP_CLICK_SNAPSHOT_MAX_AGE_MS) {
-    throw new Error(`Grounding snapshot "${snapshot.snapshotId}" is ${Math.round(snapshotAge / 1000)}s old. Call computer_observe to get a fresh snapshot before clicking.`)
-  }
+  const snapshot = assertDesktopClickTargetSnapshot(runtime, candidateId)
 
   const snap = resolveSnapByCandidate(candidateId, snapshot)
   if (snap.source === 'none' && !snap.candidateId) {
