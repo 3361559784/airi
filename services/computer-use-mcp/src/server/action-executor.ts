@@ -17,6 +17,7 @@ import type {
 } from '../types'
 import type { ComputerUseServerRuntime } from './runtime'
 
+import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { platform } from 'node:process'
 
@@ -485,8 +486,21 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
       }
     }
 
+    let dispatchId: string | undefined
     try {
       options.executionSignal?.throwIfAborted()
+      dispatchId = randomUUID()
+      await runtime.session.record({
+        event: 'dispatching',
+        toolName,
+        action: normalizedAction,
+        context,
+        policy: decision,
+        result: {
+          executionTarget,
+          dispatchId,
+        },
+      })
       let backendResult: Record<string, unknown> = {}
       let terminalResult: TerminalCommandResult | undefined
       let clipboardStructuredContent: Record<string, unknown> | undefined
@@ -523,6 +537,7 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
             policy: decision,
             result: {
               executionTarget,
+              dispatchId,
               screenshotPath: screenshot.path,
               width: screenshot.width,
               height: screenshot.height,
@@ -925,6 +940,7 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
         result: {
           ...backendResult,
           executionTarget,
+          dispatchId,
           terminalBackend,
           screenshotPath: screenshot?.path,
           displayInfo,
@@ -988,6 +1004,7 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
         policy: decision,
         result: {
           executionTarget,
+          ...(dispatchId ? { dispatchId } : {}),
           terminalBackend,
           error: errorMessage,
         },
